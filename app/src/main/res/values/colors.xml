@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Primary - Medical Blue -->
+    <color name="primary">#1565C0</color>
+    <color name="on_primary">#FFFFFF</color>
+    <color name="primary_container">#D1E4FF</color>
+    <color name="on_primary_container">#001D36</color>
+
+    <!-- Secondary - Teal -->
+    <color name="secondary">#00897B</color>
+    <color name="on_secondary">#FFFFFF</color>
+
+    <!-- Background -->
+    <color name="background">#FAFAFA</color>
+    <color name="on_background">#1C1B1F</color>
+
+    <!-- Surface -->
+    <color name="surface">#FFFFFF</color>
+    <color name="on_surface">#1C1B1F</color>
+
+    <!-- Error - Alert Red -->
+    <color name="error">#D32F2F</color>
+    <color name="on_error">#FFFFFF</color>
+
+    <!-- Status indicators -->
+    <color name="status_active">#4CAF50</color>
+    <color name="status_warning">#FF9800</color>
+    <color name="status_alert">#F44336</color>
+    <color name="status_inactive">#9E9E9E</color>
+
+    <!-- Detection overlay -->
+    <color name="detection_box">#4CAF50</color>
+    <color name="motion_indicator">#2196F3</color>
+    <color name="stillness_indicator">#FF9800</color>
+</resources>

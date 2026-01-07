@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Triage Vision</string>
+
+    <!-- Permissions -->
+    <string name="camera_permission_rationale">Camera access is required for patient monitoring</string>
+    <string name="notification_permission_rationale">Notifications are needed for monitoring alerts</string>
+
+    <!-- Monitoring States -->
+    <string name="monitoring_active">Monitoring Active</string>
+    <string name="monitoring_paused">Monitoring Paused</string>
+    <string name="monitoring_stopped">Monitoring Stopped</string>
+
+    <!-- Detection Status -->
+    <string name="person_detected">Person Detected</string>
+    <string name="no_person">No Person in Frame</string>
+    <string name="motion_detected">Motion Detected</string>
+    <string name="stillness_detected">Patient Still</string>
+
+    <!-- Alerts -->
+    <string name="alert_fall_detected">FALL DETECTED</string>
+    <string name="alert_prolonged_stillness">Prolonged Stillness Alert</string>
+    <string name="alert_pose_change">Position Change Detected</string>
+
+    <!-- Actions -->
+    <string name="start_monitoring">Start Monitoring</string>
+    <string name="stop_monitoring">Stop Monitoring</string>
+    <string name="analyze_now">Analyze Now</string>
+    <string name="view_charts">View Charts</string>
+    <string name="export_chart">Export</string>
+    <string name="settings">Settings</string>
+
+    <!-- Chart -->
+    <string name="chart_history">Chart History</string>
+    <string name="no_observations">No observations recorded yet</string>
+    <string name="export_success">Chart exported successfully</string>
+    <string name="export_failed">Export failed</string>
+
+    <!-- Notification Channel -->
+    <string name="notification_channel_monitoring">Patient Monitoring</string>
+    <string name="notification_channel_alerts">Monitoring Alerts</string>
+    <string name="notification_monitoring_title">Triage Vision Active</string>
+    <string name="notification_monitoring_text">Monitoring patient…</string>
+
+    <!-- Settings -->
+    <string name="setting_vlm_interval">VLM Analysis Interval</string>
+    <string name="setting_stillness_threshold">Stillness Alert Threshold</string>
+    <string name="setting_fall_detection">Fall Detection</string>
+    <string name="setting_data_retention">Data Retention Period</string>
+</resources>

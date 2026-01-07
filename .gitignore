@@ -1,0 +1,82 @@
+# Built application files
+*.apk
+*.ap_
+*.aab
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
+build/
+
+# Gradle files
+.gradle/
+gradle/wrapper/gradle-wrapper.jar
+
+# Local configuration file
+local.properties
+
+# Android Studio
+*.iml
+.idea/
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/gradle.xml
+.idea/assetWizardSettings.xml
+.idea/dictionaries
+.idea/libraries
+.idea/caches
+captures/
+.externalNativeBuild/
+.cxx/
+
+# NDK
+obj/
+
+# Native libraries (will be built)
+app/src/main/cpp/ncnn/
+app/src/main/cpp/llama.cpp/
+
+# Model files (too large for git)
+*.gguf
+*.bin
+*.param
+app/src/main/assets/models/
+
+# Keystore files
+*.jks
+*.keystore
+signing.properties
+
+# Log files
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Build artifacts
+native_build/
+
+# Secrets (HIPAA compliance)
+secrets/
+*.pem
+*.p12
+credentials.json
