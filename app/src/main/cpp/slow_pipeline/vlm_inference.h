@@ -5,8 +5,11 @@
 
 #ifdef HAVE_LLAMA
 #include <llama.h>
-// Note: clip.h integration disabled for now - using text-only mode
-// TODO: Re-enable when clip API is updated
+#endif
+
+#ifdef HAVE_MTMD
+#include <mtmd.h>
+#include <mtmd-helper.h>
 #endif
 
 namespace triage {
@@ -75,21 +78,26 @@ public:
 
 private:
     bool initialized_ = false;
+    bool vision_enabled_ = false;
 
 #ifdef HAVE_LLAMA
     llama_model* model_ = nullptr;
-    llama_context* ctx_ = nullptr;
-    void* clip_ctx_ = nullptr; // Vision encoder disabled for now
+    llama_context* llama_ctx_ = nullptr;
+#endif
+
+#ifdef HAVE_MTMD
+    mtmd_context* mtmd_ctx_ = nullptr;
 #endif
 
     int n_threads_ = 4;
     int n_ctx_ = 2048;
     int max_tokens_ = 512;
+    int n_batch_ = 512;
 
-    std::string generateResponse(const std::string& prompt,
-                                  const std::vector<float>& image_embed);
+    std::string generateResponseWithImage(const uint8_t* pixels, int width, int height,
+                                           const std::string& prompt);
+    std::string generateResponseTextOnly(const std::string& prompt);
     VLMObservation parseResponse(const std::string& response);
-    std::vector<float> encodeImage(const uint8_t* pixels, int width, int height);
 };
 
 } // namespace triage

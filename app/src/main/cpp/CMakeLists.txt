@@ -34,7 +34,10 @@ if(EXISTS "${LLAMA_DIR}/include/llama.h")
     include_directories(${LLAMA_DIR}/include)
     include_directories(${LLAMA_DIR}/ggml/include)
     include_directories(${LLAMA_DIR}/tools/mtmd)
+    include_directories(${LLAMA_DIR}/tools/mtmd/models)
     include_directories(${LLAMA_DIR}/common)
+    include_directories(${LLAMA_DIR}/vendor)
+    include_directories(${LLAMA_DIR}/vendor/stb)
     link_directories(${LLAMA_DIR}/lib)
     set(LLAMA_FOUND TRUE)
 else()
@@ -63,6 +66,28 @@ set(DEPTH_SOURCES
 set(SLOW_PIPELINE_SOURCES
     slow_pipeline/vlm_inference.cpp
     slow_pipeline/image_processor.cpp
+)
+
+# mtmd (multimodal) sources - required for VLM vision support
+set(MTMD_SOURCES
+    ${LLAMA_DIR}/tools/mtmd/mtmd.cpp
+    ${LLAMA_DIR}/tools/mtmd/mtmd-audio.cpp
+    ${LLAMA_DIR}/tools/mtmd/mtmd-helper.cpp
+    ${LLAMA_DIR}/tools/mtmd/clip.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/cogvlm.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/conformer.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/glm4v.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/internvl.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/kimivl.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/llama4.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/llava.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/minicpmv.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/pixtral.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/qwen2vl.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/qwen3vl.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/siglip.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/whisper-enc.cpp
+    ${LLAMA_DIR}/tools/mtmd/models/youtuvl.cpp
 )
 
 # JNI Bridge
@@ -114,16 +139,18 @@ endif()
 
 # Link llama.cpp if available
 if(LLAMA_FOUND)
-    target_sources(triage_vision PRIVATE ${SLOW_PIPELINE_SOURCES})
+    target_sources(triage_vision PRIVATE ${SLOW_PIPELINE_SOURCES} ${MTMD_SOURCES})
     # llama.cpp now has multiple libraries: llama, ggml, ggml-base, ggml-cpu
     target_link_libraries(triage_vision llama ggml ggml-base ggml-cpu)
-    target_compile_definitions(triage_vision PRIVATE HAVE_LLAMA=1)
+    target_compile_definitions(triage_vision PRIVATE HAVE_LLAMA=1 HAVE_MTMD=1)
 endif()
 
 # Optimization flags
 target_compile_options(triage_vision PRIVATE
     -O3
     -ffast-math
-    -fno-rtti
-    -fno-exceptions
+    -Wno-cast-qual
 )
+
+# mtmd requires exceptions, so we remove -fno-exceptions
+# Also needs -Wno-cast-qual for stb_image.h
