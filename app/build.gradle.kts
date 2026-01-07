@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.triage.vision"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.triage.vision"
         minSdk = 28
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
 
@@ -69,7 +69,7 @@ android {
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.4"
+        kotlinCompilerExtensionVersion = "1.5.10"
     }
 
     // Large model files in assets
@@ -79,8 +79,8 @@ android {
 }
 
 dependencies {
-    // AndroidX Core (versions compatible with compileSdk 34)
-    implementation("androidx.core:core-ktx:1.13.1")
+    // AndroidX Core
+    implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.fragment:fragment-ktx:1.8.5")
