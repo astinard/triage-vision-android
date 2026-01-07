@@ -79,6 +79,11 @@ android {
     }
 }
 
+// Room KSP configuration
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     // AndroidX Core
     implementation("androidx.core:core-ktx:1.15.0")
@@ -113,7 +118,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     // Room for local storage (using KSP)
-    val roomVersion = "2.6.1" // Note: 2.7+ requires schema export config changes
+    val roomVersion = "2.6.1"
     implementation("androidx.room:room-runtime:$roomVersion")
     implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
