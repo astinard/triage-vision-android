@@ -115,18 +115,31 @@ class TriageVisionApp : Application() {
 
             Log.i(TAG, "Initializing native libraries from: $modelDir")
 
-            // Check if models exist
-            val yoloModel = File(modelDir, "yolo11n.ncnn.bin")
-            val vlmModel = File(modelDir, "smolvlm-500m-q4_k_s.gguf")
+            // Check if models exist (match actual asset filenames)
+            val yoloModel = File(modelDir, "yolo11n_ncnn_model/model.ncnn.bin")
+            val vlmModel = File(modelDir, "SmolVLM-500M-Instruct-Q8_0.gguf")
 
             if (!yoloModel.exists()) {
                 Log.w(TAG, "YOLO model not found at: ${yoloModel.absolutePath}")
                 Log.w(TAG, "Fast pipeline will not be available")
+            } else {
+                Log.i(TAG, "YOLO model found: ${yoloModel.absolutePath} (${yoloModel.length() / 1024}KB)")
             }
+
+            val mmproj = File(modelDir, "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf")
 
             if (!vlmModel.exists()) {
                 Log.w(TAG, "SmolVLM model not found at: ${vlmModel.absolutePath}")
                 Log.w(TAG, "Slow pipeline will not be available")
+            } else {
+                Log.i(TAG, "VLM model found: ${vlmModel.absolutePath} (${vlmModel.length() / 1024 / 1024}MB)")
+            }
+
+            if (!mmproj.exists()) {
+                Log.w(TAG, "VLM mmproj not found at: ${mmproj.absolutePath}")
+                Log.w(TAG, "VLM vision capabilities will not be available")
+            } else {
+                Log.i(TAG, "VLM mmproj found: ${mmproj.absolutePath} (${mmproj.length() / 1024 / 1024}MB)")
             }
 
             // Initialize native bridge
@@ -174,22 +187,40 @@ class TriageVisionApp : Application() {
 
     private fun copyModelsFromAssets(targetDir: File) {
         try {
-            val assetManager = assets
-            val modelFiles = assetManager.list("models") ?: return
+            copyAssetDirectory("models", targetDir)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not copy models from assets: ${e.message}")
+        }
+    }
 
-            for (filename in modelFiles) {
-                val targetFile = File(targetDir, filename)
+    private fun copyAssetDirectory(assetPath: String, targetDir: File) {
+        val assetManager = assets
+        val entries = assetManager.list(assetPath) ?: return
+
+        if (!targetDir.exists()) {
+            targetDir.mkdirs()
+        }
+
+        for (entry in entries) {
+            val assetEntryPath = "$assetPath/$entry"
+            val targetFile = File(targetDir, entry)
+
+            // Check if this is a directory by trying to list its contents
+            val subEntries = assetManager.list(assetEntryPath)
+            if (subEntries != null && subEntries.isNotEmpty()) {
+                // It's a directory, recurse
+                copyAssetDirectory(assetEntryPath, targetFile)
+            } else {
+                // It's a file
                 if (!targetFile.exists()) {
-                    Log.i(TAG, "Copying model from assets: $filename")
-                    assetManager.open("models/$filename").use { input ->
+                    Log.i(TAG, "Copying model from assets: $assetEntryPath")
+                    assetManager.open(assetEntryPath).use { input ->
                         targetFile.outputStream().use { output ->
                             input.copyTo(output)
                         }
                     }
                 }
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not copy models from assets: ${e.message}")
         }
     }
 

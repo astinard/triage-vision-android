@@ -43,9 +43,9 @@ bool YoloDetector::init(const std::string& model_path, bool use_gpu) {
 
     net_.opt = opt_;
 
-    // Load model
-    std::string param_path = model_path + "/yolo11n.ncnn.param";
-    std::string bin_path = model_path + "/yolo11n.ncnn.bin";
+    // Load model (actual asset paths)
+    std::string param_path = model_path + "/yolo11n_ncnn_model/model.ncnn.param";
+    std::string bin_path = model_path + "/yolo11n_ncnn_model/model.ncnn.bin";
 
     int ret = net_.load_param(param_path.c_str());
     if (ret != 0) {
@@ -96,41 +96,51 @@ std::vector<Detection> YoloDetector::detect(const uint8_t* pixels, int width, in
     ncnn::Mat out;
     ex.extract("out0", out);
 
-    // Parse YOLO output
-    // Output shape: [num_detections, 85] (x, y, w, h, conf, 80 class probs)
+    // Parse YOLO11 output
+    // YOLO11 output shape: [8400, 84] where 84 = 4 (bbox) + 80 (class probs)
+    // bbox format: x_center, y_center, w, h (in pixels, need to scale to input size)
+    // class probs: already sigmoid applied, no separate objectness score
     person_detected_ = false;
     fall_detected_ = false;
 
-    for (int i = 0; i < out.h; i++) {
+    LOGI("YOLO output: w=%d h=%d c=%d", out.w, out.h, out.c);
+
+    // YOLO11 NCNN export gives [84, 8400] - need to handle transpose
+    // out.w = num_classes + 4 = 84
+    // out.h = num_detections = 8400
+    const int num_classes = 80;
+    const int num_dets = out.h;
+    const int feat_dim = out.w;
+
+    for (int i = 0; i < num_dets; i++) {
         const float* row = out.row(i);
 
-        float obj_conf = row[4];
-        if (obj_conf < conf_threshold_) continue;
+        // bbox: first 4 values
+        float cx = row[0];
+        float cy = row[1];
+        float bw = row[2];
+        float bh = row[3];
 
-        // Find best class
+        // Find best class (values 4-83 are class probs, already sigmoided)
         int best_class = 0;
         float best_score = 0;
-        for (int j = 5; j < 85; j++) {
+        for (int j = 4; j < feat_dim && j < 4 + num_classes; j++) {
             if (row[j] > best_score) {
                 best_score = row[j];
-                best_class = j - 5;
+                best_class = j - 4;
             }
         }
 
-        float confidence = obj_conf * best_score;
+        // In YOLO11, class probability IS the confidence (no separate objectness)
+        float confidence = best_score;
         if (confidence < conf_threshold_) continue;
 
-        // Convert to box coordinates
-        float cx = row[0];
-        float cy = row[1];
-        float w = row[2];
-        float h = row[3];
-
+        // Convert to box coordinates (scale from 640x640 to actual image size)
         Detection det;
-        det.x1 = (cx - w/2) * width / input_width_;
-        det.y1 = (cy - h/2) * height / input_height_;
-        det.x2 = (cx + w/2) * width / input_width_;
-        det.y2 = (cy + h/2) * height / input_height_;
+        det.x1 = (cx - bw/2) * width / input_width_;
+        det.y1 = (cy - bh/2) * height / input_height_;
+        det.x2 = (cx + bw/2) * width / input_width_;
+        det.y2 = (cy + bh/2) * height / input_height_;
         det.confidence = confidence;
         det.class_id = best_class;
         det.class_name = (best_class < class_names_.size()) ? class_names_[best_class] : "unknown";

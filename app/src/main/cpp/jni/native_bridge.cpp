@@ -90,13 +90,16 @@ Java_com_triage_vision_native_NativeBridge_init(
 #ifdef HAVE_LLAMA
     LOGI("llama.cpp support enabled - initializing slow pipeline");
 
-    std::string vlm_path = g_model_path + "/smolvlm-500m-q4_k_s.gguf";
-    std::string mmproj_path = g_model_path + "/mmproj-smolvlm.gguf";
+    // Actual asset filenames (both model and mmproj required for vision)
+    std::string vlm_path = g_model_path + "/SmolVLM-500M-Instruct-Q8_0.gguf";
+    std::string mmproj_path = g_model_path + "/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
 
     g_vlm = std::make_unique<triage::VLMInference>();
     if (!g_vlm->init(vlm_path, mmproj_path, 4, 0)) {
-        LOGE("Failed to initialize VLM");
+        LOGE("Failed to initialize VLM from: %s", vlm_path.c_str());
         // Don't fail completely - VLM is optional
+    } else {
+        LOGI("VLM initialized successfully from: %s", vlm_path.c_str());
     }
 
 #else
