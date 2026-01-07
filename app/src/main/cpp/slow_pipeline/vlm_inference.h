@@ -5,7 +5,8 @@
 
 #ifdef HAVE_LLAMA
 #include <llama.h>
-#include <clip.h>
+// Note: clip.h integration disabled for now - using text-only mode
+// TODO: Re-enable when clip API is updated
 #endif
 
 namespace triage {
@@ -78,7 +79,7 @@ private:
 #ifdef HAVE_LLAMA
     llama_model* model_ = nullptr;
     llama_context* ctx_ = nullptr;
-    clip_ctx* clip_ctx_ = nullptr;
+    void* clip_ctx_ = nullptr; // Vision encoder disabled for now
 #endif
 
     int n_threads_ = 4;

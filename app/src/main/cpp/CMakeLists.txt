@@ -32,6 +32,9 @@ set(LLAMA_DIR "${CMAKE_SOURCE_DIR}/llama.cpp" CACHE PATH "llama.cpp root directo
 if(EXISTS "${LLAMA_DIR}/include/llama.h")
     message(STATUS "Found llama.cpp at ${LLAMA_DIR}")
     include_directories(${LLAMA_DIR}/include)
+    include_directories(${LLAMA_DIR}/ggml/include)
+    include_directories(${LLAMA_DIR}/tools/mtmd)
+    include_directories(${LLAMA_DIR}/common)
     link_directories(${LLAMA_DIR}/lib)
     set(LLAMA_FOUND TRUE)
 else()
@@ -89,20 +92,31 @@ target_link_libraries(
 # Link NCNN if available
 if(NCNN_FOUND)
     target_sources(triage_vision PRIVATE ${FAST_PIPELINE_SOURCES})
-    target_link_libraries(triage_vision ncnn)
-    target_compile_definitions(triage_vision PRIVATE HAVE_NCNN=1)
 
-    # Link Vulkan for GPU acceleration
-    if(Vulkan_FOUND)
-        target_link_libraries(triage_vision Vulkan::Vulkan)
-        target_compile_definitions(triage_vision PRIVATE HAVE_VULKAN=1)
-    endif()
+    # NCNN with Vulkan requires additional libraries
+    target_link_libraries(triage_vision
+        ncnn
+        # glslang libraries for Vulkan shader compilation
+        glslang
+        MachineIndependent
+        GenericCodeGen
+        OGLCompiler
+        OSDependent
+        SPIRV
+        glslang-default-resource-limits
+        # OpenMP from NDK
+        -static-openmp -fopenmp
+        # Vulkan
+        vulkan
+    )
+    target_compile_definitions(triage_vision PRIVATE HAVE_NCNN=1 HAVE_VULKAN=1)
 endif()
 
 # Link llama.cpp if available
 if(LLAMA_FOUND)
     target_sources(triage_vision PRIVATE ${SLOW_PIPELINE_SOURCES})
-    target_link_libraries(triage_vision llama ggml)
+    # llama.cpp now has multiple libraries: llama, ggml, ggml-base, ggml-cpu
+    target_link_libraries(triage_vision llama ggml ggml-base ggml-cpu)
     target_compile_definitions(triage_vision PRIVATE HAVE_LLAMA=1)
 endif()
 

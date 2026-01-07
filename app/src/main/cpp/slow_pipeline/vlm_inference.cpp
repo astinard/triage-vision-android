@@ -1,7 +1,6 @@
 #include "vlm_inference.h"
 #include <android/log.h>
 #include <sstream>
-#include <regex>
 
 #define LOG_TAG "VLMInference"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -31,7 +30,7 @@ bool VLMInference::init(const std::string& model_path,
     llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = n_gpu_layers;
 
-    model_ = llama_load_model_from_file(model_path.c_str(), model_params);
+    model_ = llama_model_load_from_file(model_path.c_str(), model_params);
     if (!model_) {
         LOGE("Failed to load model: %s", model_path.c_str());
         return false;
@@ -43,25 +42,23 @@ bool VLMInference::init(const std::string& model_path,
     ctx_params.n_threads = n_threads;
     ctx_params.n_threads_batch = n_threads;
 
-    ctx_ = llama_new_context_with_model(model_, ctx_params);
+    ctx_ = llama_init_from_model(model_, ctx_params);
     if (!ctx_) {
         LOGE("Failed to create context");
-        llama_free_model(model_);
+        llama_model_free(model_);
         model_ = nullptr;
         return false;
     }
 
-    // Load vision encoder if provided
+    // Note: Vision encoder (clip) disabled for now - using text-only mode
+    // TODO: Update clip API usage when needed for vision support
     if (!mmproj_path.empty()) {
-        clip_ctx_ = clip_model_load(mmproj_path.c_str(), 1);
-        if (!clip_ctx_) {
-            LOGE("Failed to load vision encoder: %s", mmproj_path.c_str());
-            // Continue without vision - will use text-only
-        }
+        LOGI("Vision encoder path provided but clip integration disabled - using text-only mode");
     }
+    clip_ctx_ = nullptr;
 
     initialized_ = true;
-    LOGI("VLM initialized successfully");
+    LOGI("VLM initialized successfully (text-only mode)");
     return true;
 #else
     LOGE("llama.cpp not available - VLM disabled");
@@ -82,27 +79,21 @@ VLMObservation VLMInference::analyze(const uint8_t* pixels, int width, int heigh
 
     LOGI("Running VLM analysis (%dx%d)", width, height);
 
-    try {
-        // Encode image if vision encoder available
-        std::vector<float> image_embed;
-        if (clip_ctx_) {
-            image_embed = encodeImage(pixels, width, height);
-        }
+    // Generate response (text-only mode for now)
+    std::vector<float> image_embed; // Empty - no vision encoding
+    std::string response = generateResponse(prompt, image_embed);
 
-        // Generate response
-        std::string response = generateResponse(prompt, image_embed);
-
-        result.raw_output = response;
-        result = parseResponse(response);
-        result.raw_output = response;
-        result.success = true;
-
-        LOGI("VLM analysis complete");
-
-    } catch (const std::exception& e) {
-        LOGE("VLM inference error: %s", e.what());
-        result.error = e.what();
+    if (response.empty()) {
+        result.error = "Failed to generate response";
+        return result;
     }
+
+    result.raw_output = response;
+    result = parseResponse(response);
+    result.raw_output = response;
+    result.success = true;
+
+    LOGI("VLM analysis complete");
 #else
     result.error = "llama.cpp not available";
 
@@ -120,55 +111,53 @@ VLMObservation VLMInference::analyze(const uint8_t* pixels, int width, int heigh
 
 #ifdef HAVE_LLAMA
 std::vector<float> VLMInference::encodeImage(const uint8_t* pixels, int width, int height) {
-    std::vector<float> embedding;
+    // Vision encoding disabled for now - return empty embedding
+    // TODO: Update clip API usage for vision support
+    return std::vector<float>();
+}
 
-    if (!clip_ctx_) return embedding;
-
-    // Create clip image from pixels
-    clip_image_u8 img;
-    img.nx = width;
-    img.ny = height;
-    img.data.resize(width * height * 3);
-
-    // Convert RGBA to RGB
-    for (int i = 0; i < width * height; i++) {
-        img.data[i*3 + 0] = pixels[i*4 + 0];
-        img.data[i*3 + 1] = pixels[i*4 + 1];
-        img.data[i*3 + 2] = pixels[i*4 + 2];
+// Helper function to add token to batch (replaces llama_batch_add)
+static void batch_add(llama_batch& batch, llama_token token, llama_pos pos,
+                      const std::vector<llama_seq_id>& seq_ids, bool logits) {
+    batch.token[batch.n_tokens] = token;
+    batch.pos[batch.n_tokens] = pos;
+    batch.n_seq_id[batch.n_tokens] = seq_ids.size();
+    for (size_t i = 0; i < seq_ids.size(); i++) {
+        batch.seq_id[batch.n_tokens][i] = seq_ids[i];
     }
+    batch.logits[batch.n_tokens] = logits ? 1 : 0;
+    batch.n_tokens++;
+}
 
-    // Preprocess and encode
-    clip_image_f32 img_res;
-    clip_image_preprocess(clip_ctx_, &img, &img_res, true);
-
-    int n_embed = clip_n_patches(clip_ctx_) * clip_n_mmproj_embd(clip_ctx_);
-    embedding.resize(n_embed);
-
-    clip_image_encode(clip_ctx_, n_threads_, &img_res, embedding.data());
-
-    return embedding;
+// Helper function to clear batch (replaces llama_batch_clear)
+static void batch_clear(llama_batch& batch) {
+    batch.n_tokens = 0;
 }
 
 std::string VLMInference::generateResponse(const std::string& prompt,
                                             const std::vector<float>& image_embed) {
     std::string response;
 
+    // Get vocabulary from model
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+
     // Tokenize prompt
     std::vector<llama_token> tokens(n_ctx_);
-    int n_tokens = llama_tokenize(model_, prompt.c_str(), prompt.length(),
+    int n_tokens = llama_tokenize(vocab, prompt.c_str(), prompt.length(),
                                    tokens.data(), tokens.size(), true, false);
+    if (n_tokens < 0) {
+        LOGE("Tokenization failed");
+        return "";
+    }
     tokens.resize(n_tokens);
-
-    // TODO: Inject image embeddings if available
-    // This requires proper handling based on the specific VLM architecture
 
     // Evaluate prompt
     llama_batch batch = llama_batch_init(n_ctx_, 0, 1);
 
     for (int i = 0; i < n_tokens; i++) {
-        llama_batch_add(batch, tokens[i], i, {0}, false);
+        batch_add(batch, tokens[i], i, {0}, false);
     }
-    batch.logits[batch.n_tokens - 1] = true;
+    batch.logits[batch.n_tokens - 1] = 1; // Enable logits for last token
 
     if (llama_decode(ctx_, batch) != 0) {
         LOGE("Failed to evaluate prompt");
@@ -176,30 +165,36 @@ std::string VLMInference::generateResponse(const std::string& prompt,
         return "";
     }
 
+    // Create greedy sampler
+    llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+
     // Generate response
     int n_generated = 0;
-    while (n_generated < max_tokens_) {
-        // Sample next token
-        auto logits = llama_get_logits_ith(ctx_, batch.n_tokens - 1);
-        auto n_vocab = llama_n_vocab(model_);
+    llama_token eos_token = llama_vocab_eos(vocab);
 
-        llama_token new_token = llama_sample_token_greedy(ctx_, logits);
+    while (n_generated < max_tokens_) {
+        // Sample next token using sampler
+        llama_token new_token = llama_sampler_sample(smpl, ctx_, -1);
+
+        // Accept the token
+        llama_sampler_accept(smpl, new_token);
 
         // Check for end of generation
-        if (new_token == llama_token_eos(model_)) {
+        if (new_token == eos_token) {
             break;
         }
 
         // Convert token to string
         char buf[256];
-        int len = llama_token_to_piece(model_, new_token, buf, sizeof(buf), false);
+        int len = llama_token_to_piece(vocab, new_token, buf, sizeof(buf), 0, false);
         if (len > 0) {
             response.append(buf, len);
         }
 
         // Prepare next batch
-        llama_batch_clear(batch);
-        llama_batch_add(batch, new_token, n_tokens + n_generated, {0}, true);
+        batch_clear(batch);
+        batch_add(batch, new_token, n_tokens + n_generated, {0}, true);
 
         if (llama_decode(ctx_, batch) != 0) {
             break;
@@ -208,6 +203,7 @@ std::string VLMInference::generateResponse(const std::string& prompt,
         n_generated++;
     }
 
+    llama_sampler_free(smpl);
     llama_batch_free(batch);
     return response;
 }
@@ -246,9 +242,6 @@ VLMObservation VLMInference::parseResponse(const std::string& response) {
         obs.movement_level = extract("movement_level");
         obs.comfort_assessment = extract("comfort_assessment");
         obs.chart_note = extract("chart_note");
-
-        // Extract arrays (simplified)
-        // TODO: Proper array parsing
     }
 
     // Fallback to raw response as chart note
@@ -286,13 +279,10 @@ void VLMInference::cleanup() {
         ctx_ = nullptr;
     }
     if (model_) {
-        llama_free_model(model_);
+        llama_model_free(model_);
         model_ = nullptr;
     }
-    if (clip_ctx_) {
-        clip_free(clip_ctx_);
-        clip_ctx_ = nullptr;
-    }
+    // clip_ctx_ is nullptr - no cleanup needed
     llama_backend_free();
     initialized_ = false;
     LOGI("VLM cleaned up");

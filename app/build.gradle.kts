@@ -8,6 +8,7 @@ plugins {
 android {
     namespace = "com.triage.vision"
     compileSdk = 35
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "com.triage.vision"
