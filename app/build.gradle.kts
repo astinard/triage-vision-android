@@ -96,7 +96,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
 
     // CameraX for video capture
-    val cameraxVersion = "1.4.1"
+    val cameraxVersion = "1.5.2"
     implementation("androidx.camera:camera-core:$cameraxVersion")
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
