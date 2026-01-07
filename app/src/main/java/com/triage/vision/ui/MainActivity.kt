@@ -27,10 +27,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.triage.vision.camera.DepthCameraManager
+import com.triage.vision.camera.DepthFrameSynchronizer
 import com.triage.vision.data.ObservationEntity
 import com.triage.vision.pipeline.FastPipeline
 import com.triage.vision.pipeline.SlowPipeline
 import com.triage.vision.ui.theme.TriageVisionTheme
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -167,6 +170,15 @@ fun MainScreen(
                         when (alert) {
                             is FastPipeline.Alert.FallDetected ->
                                 "FALL DETECTED - Immediate attention required"
+                            is FastPipeline.Alert.DepthVerifiedFall ->
+                                "FALL DETECTED (Verified) - Drop: %.1fm, Confidence: %.0f%%".format(
+                                    alert.dropMeters,
+                                    alert.confidence * 100
+                                )
+                            is FastPipeline.Alert.LeavingBedZone ->
+                                "Patient leaving bed zone - Distance: %.1fm".format(
+                                    alert.distanceMeters
+                                )
                             is FastPipeline.Alert.Stillness ->
                                 "Patient has been still for ${alert.durationSeconds / 60} minutes"
                             is FastPipeline.Alert.PoseChange ->
@@ -226,6 +238,54 @@ fun MonitoringScreen(
     viewModel: MonitoringViewModel,
     cameraExecutor: ExecutorService
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // Initialize depth camera manager
+    val depthCameraManager = remember { DepthCameraManager(context) }
+    val frameSynchronizer = remember { DepthFrameSynchronizer() }
+
+    var depthAvailable by remember { mutableStateOf(false) }
+
+    // Check for depth camera and start it
+    LaunchedEffect(Unit) {
+        // Initialize first, then check support
+        depthCameraManager.initialize()
+        depthAvailable = depthCameraManager.isDepthSupported()
+        viewModel.setDepthEnabled(depthAvailable)
+
+        if (depthAvailable) {
+            Log.i("MonitoringScreen", "Depth camera available, starting...")
+            depthCameraManager.start()
+
+            // Collect depth frames and feed to synchronizer
+            scope.launch {
+                depthCameraManager.depthFrames.collect { depthFrame ->
+                    frameSynchronizer.onDepthFrame(depthFrame)
+                }
+            }
+
+            // Collect synchronized frames
+            scope.launch {
+                frameSynchronizer.syncedFrames.collect { syncedFrame ->
+                    if (uiState.isMonitoring) {
+                        viewModel.processFrameWithDepth(syncedFrame.rgb, syncedFrame.depth)
+                    }
+                }
+            }
+        } else {
+            Log.i("MonitoringScreen", "No depth camera available, using RGB-only")
+        }
+    }
+
+    // Cleanup on dispose
+    DisposableEffect(Unit) {
+        onDispose {
+            depthCameraManager.stop()
+            frameSynchronizer.clear()
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
@@ -235,8 +295,12 @@ fun MonitoringScreen(
             CameraPreview(
                 modifier = Modifier.fillMaxSize(),
                 cameraExecutor = cameraExecutor,
-                onFrameAnalyzed = { bitmap ->
-                    if (uiState.isMonitoring) {
+                onFrameAnalyzed = { bitmap, timestamp ->
+                    if (depthAvailable) {
+                        // Feed RGB frame to synchronizer
+                        frameSynchronizer.onRgbFrame(bitmap, timestamp)
+                    } else if (uiState.isMonitoring) {
+                        // Fallback: RGB-only processing
                         viewModel.processFrame(bitmap)
                     }
                 }
@@ -246,7 +310,10 @@ fun MonitoringScreen(
                 personDetected = uiState.personDetected,
                 pose = uiState.currentPose,
                 motionLevel = uiState.motionLevel,
-                fps = uiState.fps
+                fps = uiState.fps,
+                depthEnabled = uiState.depthEnabled,
+                distanceMeters = uiState.distanceMeters,
+                inBedZone = uiState.inBedZone
             )
         }
 
@@ -266,7 +333,7 @@ fun MonitoringScreen(
 fun CameraPreview(
     modifier: Modifier = Modifier,
     cameraExecutor: ExecutorService,
-    onFrameAnalyzed: (Bitmap) -> Unit
+    onFrameAnalyzed: (Bitmap, Long) -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -292,7 +359,8 @@ fun CameraPreview(
                 .also { analysis ->
                     analysis.setAnalyzer(cameraExecutor) { imageProxy ->
                         val bitmap = imageProxy.toBitmap()
-                        onFrameAnalyzed(bitmap)
+                        val timestamp = imageProxy.imageInfo.timestamp
+                        onFrameAnalyzed(bitmap, timestamp)
                         imageProxy.close()
                     }
                 }
@@ -325,18 +393,33 @@ fun DetectionOverlay(
     personDetected: Boolean,
     pose: FastPipeline.Pose,
     motionLevel: Float,
-    fps: Float
+    fps: Float,
+    depthEnabled: Boolean = false,
+    distanceMeters: Float = 0f,
+    inBedZone: Boolean = false
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        Text(
-            text = "%.1f FPS".format(fps),
-            color = Color.White,
-            style = MaterialTheme.typography.labelSmall
-        )
+        Row(
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "%.1f FPS".format(fps),
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall
+            )
+            if (depthEnabled) {
+                Text(
+                    text = "DEPTH",
+                    color = Color.Cyan,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+        }
 
         Spacer(modifier = Modifier.weight(1f))
 
@@ -361,6 +444,27 @@ fun DetectionOverlay(
                     text = "Motion: %.0f%%".format(motionLevel * 100),
                     style = MaterialTheme.typography.bodySmall
                 )
+
+                // Depth metrics
+                if (depthEnabled && personDetected) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                    )
+                    Text(
+                        text = "Distance: %.1fm".format(distanceMeters),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Cyan
+                    )
+                    Text(
+                        text = if (inBedZone) "In Bed Zone" else "Out of Bed Zone",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (inBedZone)
+                            MaterialTheme.colorScheme.primary
+                        else
+                            MaterialTheme.colorScheme.error
+                    )
+                }
             }
         }
     }

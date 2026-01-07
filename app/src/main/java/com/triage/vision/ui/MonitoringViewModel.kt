@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.triage.vision.TriageVisionApp
+import com.triage.vision.camera.DepthCameraManager
 import com.triage.vision.data.AlertEntity
 import com.triage.vision.data.ObservationEntity
 import com.triage.vision.pipeline.FastPipeline
@@ -41,7 +42,13 @@ class MonitoringViewModel : ViewModel() {
         val currentAlert: FastPipeline.Alert? = null,
         val frameCount: Long = 0,
         val fps: Float = 0f,
-        val error: String? = null
+        val error: String? = null,
+        // Depth sensor fields
+        val depthAvailable: Boolean = false,
+        val depthEnabled: Boolean = false,
+        val distanceMeters: Float = 0f,
+        val bedProximityMeters: Float = 0f,
+        val inBedZone: Boolean = false
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -133,6 +140,58 @@ class MonitoringViewModel : ViewModel() {
     }
 
     /**
+     * Process a camera frame with depth data through the fast pipeline
+     */
+    fun processFrameWithDepth(bitmap: Bitmap, depthFrame: DepthCameraManager.DepthFrame) {
+        if (!_uiState.value.isMonitoring) return
+
+        viewModelScope.launch(Dispatchers.Default) {
+            try {
+                // Update FPS
+                val now = System.currentTimeMillis()
+                frameCountForFps++
+                if (now - fpsUpdateTime >= 1000) {
+                    val fps = frameCountForFps * 1000f / (now - fpsUpdateTime)
+                    _uiState.update { it.copy(fps = fps) }
+                    frameCountForFps = 0
+                    fpsUpdateTime = now
+                }
+
+                // Run fast pipeline with depth
+                val result = fastPipeline.processFrameWithDepth(bitmap, depthFrame)
+
+                // Update UI state with depth metrics
+                _uiState.update { state ->
+                    state.copy(
+                        personDetected = result.personDetected,
+                        currentPose = result.pose,
+                        motionLevel = result.motionLevel,
+                        secondsSinceMotion = result.secondsSinceLastMotion,
+                        frameCount = fastPipeline.getFrameCount(),
+                        depthAvailable = result.depthAvailable,
+                        distanceMeters = result.distanceMeters,
+                        bedProximityMeters = result.bedProximityMeters,
+                        inBedZone = result.inBedZone
+                    )
+                }
+
+                lastFrameTime = now
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Frame processing with depth error: ${e.message}", e)
+            }
+        }
+    }
+
+    /**
+     * Set depth sensor availability
+     */
+    fun setDepthEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(depthEnabled = enabled) }
+        Log.i(TAG, "Depth sensor enabled: $enabled")
+    }
+
+    /**
      * Trigger VLM analysis manually or on schedule
      */
     fun triggerVlmAnalysis(triggeredBy: String = "manual") {
@@ -215,6 +274,14 @@ class MonitoringViewModel : ViewModel() {
                     alertType = "fall",
                     details = "Fall detected"
                 )
+                is FastPipeline.Alert.DepthVerifiedFall -> AlertEntity(
+                    alertType = "depth_fall",
+                    details = "Fall verified by depth: drop=${alert.dropMeters}m, confidence=${(alert.confidence * 100).toInt()}%"
+                )
+                is FastPipeline.Alert.LeavingBedZone -> AlertEntity(
+                    alertType = "leaving_bed",
+                    details = "Patient leaving bed zone: ${alert.distanceMeters}m from bed"
+                )
                 is FastPipeline.Alert.Stillness -> AlertEntity(
                     alertType = "stillness",
                     details = "No movement for ${alert.durationSeconds} seconds"
@@ -231,6 +298,8 @@ class MonitoringViewModel : ViewModel() {
             if (!_uiState.value.isAnalyzing) {
                 val triggeredBy = when (alert) {
                     is FastPipeline.Alert.FallDetected -> "fall"
+                    is FastPipeline.Alert.DepthVerifiedFall -> "depth_fall"
+                    is FastPipeline.Alert.LeavingBedZone -> "leaving_bed"
                     is FastPipeline.Alert.Stillness -> "stillness"
                     is FastPipeline.Alert.PoseChange -> "pose_change"
                 }

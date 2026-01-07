@@ -51,6 +51,11 @@ set(FAST_PIPELINE_SOURCES
     fast_pipeline/pose_estimator.cpp
 )
 
+# Depth Processing (always built - used for ToF sensor support)
+set(DEPTH_SOURCES
+    fast_pipeline/depth_processor.cpp
+)
+
 # Slow Pipeline - VLM Inference
 set(SLOW_PIPELINE_SOURCES
     slow_pipeline/vlm_inference.cpp
@@ -69,6 +74,7 @@ add_library(
     triage_vision
     SHARED
     ${JNI_SOURCES}
+    ${DEPTH_SOURCES}
     # Conditionally add pipeline sources based on dependencies
 )
 

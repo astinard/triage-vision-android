@@ -41,6 +41,35 @@ class NativeBridge {
     external fun getMotionLevel(): Float
 
     /**
+     * Fast Pipeline: Detect motion and pose with depth enhancement
+     * @param bitmap Camera frame (RGB)
+     * @param depthData Depth map (DEPTH16 format, values in millimeters)
+     * @param depthWidth Depth frame width
+     * @param depthHeight Depth frame height
+     * @return Detection results with depth metrics (JSON string)
+     */
+    external fun detectMotionWithDepth(
+        bitmap: Bitmap,
+        depthData: ShortArray,
+        depthWidth: Int,
+        depthHeight: Int
+    ): String?
+
+    /**
+     * Get depth value at specific pixel coordinates
+     * @param x X coordinate in depth frame
+     * @param y Y coordinate in depth frame
+     * @return Depth in meters, or -1 if invalid
+     */
+    external fun getDepthAt(x: Int, y: Int): Float
+
+    /**
+     * Get average distance to detected person
+     * @return Distance in meters
+     */
+    external fun getAverageDistance(): Float
+
+    /**
      * Slow Pipeline: Run VLM analysis on frame
      * @param bitmap Camera frame to analyze
      * @param prompt Analysis prompt

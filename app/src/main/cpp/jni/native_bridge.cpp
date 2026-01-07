@@ -23,6 +23,8 @@
 #include "../fast_pipeline/pose_estimator.h"
 #endif
 
+#include "../fast_pipeline/depth_processor.h"
+
 #ifdef HAVE_LLAMA
 #include "../slow_pipeline/vlm_inference.h"
 #endif
@@ -39,6 +41,9 @@ static std::unique_ptr<triage::PoseEstimator> g_pose_estimator;
 #ifdef HAVE_LLAMA
 static std::unique_ptr<triage::VLMInference> g_vlm;
 #endif
+
+// Depth processor (always available)
+static std::unique_ptr<triage::DepthProcessor> g_depth_processor;
 
 static std::string g_model_path;
 static bool g_initialized = false;
@@ -192,6 +197,182 @@ Java_com_triage_vision_native_NativeBridge_getMotionLevel(
 }
 
 // ============================================================================
+// Depth-Enhanced Detection
+// ============================================================================
+
+JNIEXPORT jstring JNICALL
+Java_com_triage_vision_native_NativeBridge_detectMotionWithDepth(
+    JNIEnv *env,
+    jobject thiz,
+    jobject bitmap,
+    jshortArray depth_data,
+    jint depth_width,
+    jint depth_height
+) {
+    // Get RGB bitmap info and pixels
+    AndroidBitmapInfo info;
+    if (AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS) {
+        LOGE("Failed to get bitmap info");
+        return env->NewStringUTF(R"({"error": "Failed to get bitmap info"})");
+    }
+
+    void *pixels;
+    if (AndroidBitmap_lockPixels(env, bitmap, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS) {
+        LOGE("Failed to lock bitmap pixels");
+        return env->NewStringUTF(R"({"error": "Failed to lock bitmap pixels"})");
+    }
+
+    // Get depth array
+    jshort* depth_ptr = nullptr;
+    if (depth_data != nullptr) {
+        depth_ptr = env->GetShortArrayElements(depth_data, nullptr);
+    }
+
+    // Initialize depth processor if needed
+    if (!g_depth_processor) {
+        g_depth_processor = std::make_unique<triage::DepthProcessor>();
+    }
+
+    // Update depth map if available
+    if (depth_ptr != nullptr && depth_width > 0 && depth_height > 0) {
+        g_depth_processor->updateDepthMap(
+            reinterpret_cast<uint16_t*>(depth_ptr),
+            depth_width,
+            depth_height
+        );
+    }
+
+    std::string result_json = "{}";
+
+#ifdef HAVE_NCNN
+    if (g_yolo_detector && g_motion_analyzer && g_pose_estimator) {
+        // Run YOLO detection on RGB
+        auto detections = g_yolo_detector->detect(
+            static_cast<uint8_t*>(pixels), info.width, info.height);
+
+        // Analyze RGB motion
+        auto motion_state = g_motion_analyzer->analyze(
+            static_cast<uint8_t*>(pixels), info.width, info.height);
+
+        // Update pose estimator
+        g_pose_estimator->update(detections);
+
+        // Depth-enhanced analysis
+        float distance_meters = 0.0f;
+        float depth_motion_level = 0.0f;
+        bool depth_fall = false;
+        float vertical_drop = 0.0f;
+        float fall_confidence = 0.0f;
+        float bed_proximity = 0.0f;
+        bool in_bed_zone = false;
+        float pos_x = 0.0f, pos_y = 0.0f, pos_z = 0.0f;
+
+        if (g_depth_processor->hasDepthData() && !detections.empty()) {
+            // Get person bounding box (use first detection)
+            auto& det = detections[0];
+            triage::BoundingBox person_bbox = {
+                det.x1 / static_cast<float>(info.width),
+                det.y1 / static_cast<float>(info.height),
+                (det.x2 - det.x1) / static_cast<float>(info.width),
+                (det.y2 - det.y1) / static_cast<float>(info.height)
+            };
+
+            // Fall detection with depth
+            auto fall_result = g_depth_processor->detectFall(
+                person_bbox, info.width, info.height);
+            depth_fall = fall_result.fall_detected;
+            vertical_drop = fall_result.vertical_drop_meters;
+            fall_confidence = fall_result.confidence;
+
+            // Motion analysis with depth
+            auto motion_result = g_depth_processor->analyzeMotion(
+                person_bbox, info.width, info.height);
+            distance_meters = motion_result.distance_meters;
+            depth_motion_level = motion_result.depth_motion_level;
+            bed_proximity = motion_result.bed_proximity_meters;
+            in_bed_zone = motion_result.in_bed_zone;
+            pos_x = motion_result.position_3d.x;
+            pos_y = motion_result.position_3d.y;
+            pos_z = motion_result.position_3d.z;
+        }
+
+        // Combined fall detection (2D + depth)
+        bool combined_fall = g_yolo_detector->isFallDetected() || depth_fall;
+
+        // Build JSON result with depth metrics
+        char json_buf[2048];
+        snprintf(json_buf, sizeof(json_buf),
+            R"({)"
+            R"("person_detected": %s, )"
+            R"("pose": %d, )"
+            R"("motion_level": %.3f, )"
+            R"("fall_detected": %s, )"
+            R"("depth_fall": %s, )"
+            R"("vertical_drop_meters": %.3f, )"
+            R"("fall_confidence": %.2f, )"
+            R"("seconds_since_motion": %lld, )"
+            R"("detection_count": %zu, )"
+            R"("distance_meters": %.2f, )"
+            R"("depth_motion_level": %.3f, )"
+            R"("bed_proximity_meters": %.2f, )"
+            R"("in_bed_zone": %s, )"
+            R"("position_3d": {"x": %.3f, "y": %.3f, "z": %.3f}, )"
+            R"("depth_available": %s)"
+            R"(})",
+            g_yolo_detector->isPersonDetected() ? "true" : "false",
+            static_cast<int>(g_pose_estimator->getCurrentPose()),
+            motion_state.motion_level,
+            combined_fall ? "true" : "false",
+            depth_fall ? "true" : "false",
+            vertical_drop,
+            fall_confidence,
+            (long long)g_motion_analyzer->getSecondsSinceMotion(),
+            detections.size(),
+            distance_meters,
+            depth_motion_level,
+            bed_proximity,
+            in_bed_zone ? "true" : "false",
+            pos_x, pos_y, pos_z,
+            g_depth_processor->hasDepthData() ? "true" : "false"
+        );
+        result_json = json_buf;
+    }
+#endif
+
+    // Cleanup
+    if (depth_ptr != nullptr) {
+        env->ReleaseShortArrayElements(depth_data, depth_ptr, JNI_ABORT);
+    }
+    AndroidBitmap_unlockPixels(env, bitmap);
+
+    return env->NewStringUTF(result_json.c_str());
+}
+
+JNIEXPORT jfloat JNICALL
+Java_com_triage_vision_native_NativeBridge_getDepthAt(
+    JNIEnv *env,
+    jobject thiz,
+    jint x,
+    jint y
+) {
+    if (g_depth_processor) {
+        return g_depth_processor->getDepthAt(x, y);
+    }
+    return -1.0f;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_com_triage_vision_native_NativeBridge_getAverageDistance(
+    JNIEnv *env,
+    jobject thiz
+) {
+    if (g_depth_processor) {
+        return g_depth_processor->getAverageDistance();
+    }
+    return 0.0f;
+}
+
+// ============================================================================
 // Slow Pipeline - VLM Scene Understanding
 // ============================================================================
 
@@ -297,6 +478,12 @@ Java_com_triage_vision_native_NativeBridge_cleanup(
         g_vlm.reset();
     }
 #endif
+
+    // Cleanup depth processor
+    if (g_depth_processor) {
+        g_depth_processor->reset();
+        g_depth_processor.reset();
+    }
 
     g_initialized = false;
     LOGI("Native cleanup complete");
