@@ -3,7 +3,6 @@ package com.triage.vision
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.os.Build
 import android.util.Log
 import com.triage.vision.data.AppDatabase
 import com.triage.vision.data.ObservationRepository
@@ -79,36 +78,34 @@ class TriageVisionApp : Application() {
     }
 
     private fun createNotificationChannels() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val notificationManager = getSystemService(NotificationManager::class.java)
+        val notificationManager = getSystemService(NotificationManager::class.java)
 
-            // Monitoring channel (low importance - ongoing)
-            val monitoringChannel = NotificationChannel(
-                CHANNEL_MONITORING,
-                getString(R.string.notification_channel_monitoring),
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Ongoing patient monitoring notifications"
-                setShowBadge(false)
-            }
-
-            // Alerts channel (high importance)
-            val alertsChannel = NotificationChannel(
-                CHANNEL_ALERTS,
-                getString(R.string.notification_channel_alerts),
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Critical patient monitoring alerts"
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 500, 200, 500)
-            }
-
-            notificationManager.createNotificationChannels(
-                listOf(monitoringChannel, alertsChannel)
-            )
-
-            Log.i(TAG, "Notification channels created")
+        // Monitoring channel (low importance - ongoing)
+        val monitoringChannel = NotificationChannel(
+            CHANNEL_MONITORING,
+            getString(R.string.notification_channel_monitoring),
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Ongoing patient monitoring notifications"
+            setShowBadge(false)
         }
+
+        // Alerts channel (high importance)
+        val alertsChannel = NotificationChannel(
+            CHANNEL_ALERTS,
+            getString(R.string.notification_channel_alerts),
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Critical patient monitoring alerts"
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0, 500, 200, 500)
+        }
+
+        notificationManager.createNotificationChannels(
+            listOf(monitoringChannel, alertsChannel)
+        )
+
+        Log.i(TAG, "Notification channels created")
     }
 
     private suspend fun initializeNativeLibraries() {
