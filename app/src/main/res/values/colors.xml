@@ -32,4 +32,7 @@
     <color name="detection_box">#4CAF50</color>
     <color name="motion_indicator">#2196F3</color>
     <color name="stillness_indicator">#FF9800</color>
+
+    <!-- Launcher icon background -->
+    <color name="ic_launcher_background">#1565C0</color>
 </resources>
