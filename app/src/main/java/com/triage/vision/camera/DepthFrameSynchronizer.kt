@@ -79,7 +79,7 @@ class DepthFrameSynchronizer(
             emitSyncedFrame(bitmap, timestampNs, matchingDepth)
         } else {
             // Buffer for later matching
-            rgbBuffer[timestampNs] = RgbEntry(bitmap.copy(bitmap.config, false), timestampNs)
+            rgbBuffer[timestampNs] = RgbEntry(bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false), timestampNs)
             cleanupOldEntries(timestampNs)
         }
     }
