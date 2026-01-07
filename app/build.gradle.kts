@@ -83,20 +83,20 @@ ksp {
 
 dependencies {
     // AndroidX Core
-    implementation("androidx.core:core-ktx:1.17.0")
+    implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
-    implementation("androidx.activity:activity-ktx:1.12.2")
+    implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
 
     // Compose UI
-    implementation(platform("androidx.compose:compose-bom:2025.12.01"))
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.activity:activity-compose:1.12.2")
+    implementation("androidx.activity:activity-compose:1.9.3")
 
     // CameraX for video capture
-    val cameraxVersion = "1.5.2"
+    val cameraxVersion = "1.4.1"
     implementation("androidx.camera:camera-core:$cameraxVersion")
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
