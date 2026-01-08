@@ -47,10 +47,9 @@ class TriageVisionApp : Application() {
 
     // Core components (lazy initialized)
     val nativeBridge: NativeBridge by lazy { NativeBridge() }
-    // MediaPipe crashes on older devices (Pixel 2, etc.) - disable for now
-    // TODO: Enable on newer devices with compatible GPU (API 28+, Adreno 6xx+)
-    // val poseDetector: MediaPipePoseDetector by lazy { MediaPipePoseDetector(this) }
-    val fastPipeline: FastPipeline by lazy { FastPipeline(nativeBridge, null) }
+    // MediaPipe pose detector - uses CPU delegate for Pixel 2 compatibility
+    val poseDetector: MediaPipePoseDetector by lazy { MediaPipePoseDetector(this) }
+    val fastPipeline: FastPipeline by lazy { FastPipeline(nativeBridge, poseDetector) }
     val slowPipeline: SlowPipeline by lazy { SlowPipeline(nativeBridge) }
     val chartEngine: AutoChartEngine by lazy { AutoChartEngine() }
 
@@ -261,7 +260,7 @@ class TriageVisionApp : Application() {
 
     override fun onTerminate() {
         super.onTerminate()
-        // poseDetector.close()  // Disabled - MediaPipe crashes on older devices
+        poseDetector.close()
         nativeBridge.cleanup()
     }
 }

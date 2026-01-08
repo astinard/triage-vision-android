@@ -114,8 +114,8 @@ dependencies {
     // MediaPipe for pose detection
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
 
-    // ONNX Runtime for CLIP classifier
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.16.3")
+    // ONNX Runtime for CLIP classifier (1.17+ supports IR version 10)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
 
     // Lifecycle & ViewModel
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
