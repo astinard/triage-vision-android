@@ -76,6 +76,12 @@ android {
     aaptOptions {
         noCompress += listOf("gguf", "bin", "param")
     }
+
+    // Enable default values for Android mocks in unit tests
+    // This allows unit tests to run without Robolectric
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 // Room KSP configuration
