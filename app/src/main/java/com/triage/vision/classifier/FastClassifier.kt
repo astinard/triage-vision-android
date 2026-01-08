@@ -6,6 +6,8 @@ import android.util.Log
 import ai.onnxruntime.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import kotlin.math.sqrt
 
@@ -26,12 +28,12 @@ class FastClassifier(private val context: Context) {
         private const val VISUAL_ENCODER_PATH = "models/mobileclip_visual.onnx"
         private const val TEXT_EMBEDDINGS_PATH = "models/nursing_text_embeddings.bin"
 
-        // Image preprocessing constants (CLIP standard)
-        private const val INPUT_SIZE = 224
-        private val MEAN = floatArrayOf(0.48145466f, 0.4578275f, 0.40821073f)
-        private val STD = floatArrayOf(0.26862954f, 0.26130258f, 0.27577711f)
+        // Image preprocessing constants (MobileCLIP-S1 uses identity normalization)
+        private const val INPUT_SIZE = 256
+        private val MEAN = floatArrayOf(0f, 0f, 0f)
+        private val STD = floatArrayOf(1f, 1f, 1f)
 
-        // Embedding dimension (MobileCLIP-S2)
+        // Embedding dimension (MobileCLIP-S1)
         private const val EMBEDDING_DIM = 512
     }
 
@@ -137,6 +139,14 @@ class FastClassifier(private val context: Context) {
 
     /**
      * Load pre-computed text embeddings from assets
+     * Binary format:
+     *   - category_count (uint32)
+     *   - For each category:
+     *     - name_len (uint32)
+     *     - name (utf-8 bytes)
+     *     - num_labels (uint32)
+     *     - embedding_dim (uint32)
+     *     - floats (num_labels * embedding_dim float32 values)
      */
     private fun loadTextEmbeddings() {
         try {
@@ -148,20 +158,48 @@ class FastClassifier(private val context: Context) {
             }
 
             if (embeddingsExist) {
-                // Load binary embeddings file
-                // Format: [category_count][label_count][embedding_dim][floats...]
                 context.assets.open(TEXT_EMBEDDINGS_PATH).use { input ->
-                    // TODO: Implement binary loading
-                    Log.i(TAG, "Text embeddings loaded")
+                    val bytes = input.readBytes()
+                    val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+
+                    val categoryCount = buffer.int
+                    Log.d(TAG, "Loading $categoryCount embedding categories")
+
+                    val embeddings = mutableMapOf<String, Array<FloatArray>>()
+
+                    for (i in 0 until categoryCount) {
+                        // Read category name
+                        val nameLen = buffer.int
+                        val nameBytes = ByteArray(nameLen)
+                        buffer.get(nameBytes)
+                        val categoryName = String(nameBytes, Charsets.UTF_8)
+
+                        // Read dimensions
+                        val numLabels = buffer.int
+                        val embeddingDim = buffer.int
+
+                        // Read embeddings
+                        val categoryEmbeddings = Array(numLabels) { FloatArray(embeddingDim) }
+                        for (label in 0 until numLabels) {
+                            for (dim in 0 until embeddingDim) {
+                                categoryEmbeddings[label][dim] = buffer.float
+                            }
+                        }
+
+                        embeddings[categoryName] = categoryEmbeddings
+                        Log.d(TAG, "  $categoryName: $numLabels labels x $embeddingDim dims")
+                    }
+
+                    textEmbeddings = embeddings
+                    Log.i(TAG, "Text embeddings loaded: ${embeddings.size} categories")
                 }
             } else {
                 Log.w(TAG, "Text embeddings not found, will compute at runtime (slower)")
-                // Use default embeddings or compute from text encoder
                 textEmbeddings = createDefaultEmbeddings()
             }
 
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to load text embeddings: ${e.message}")
+            Log.e(TAG, "Failed to load text embeddings: ${e.message}", e)
             textEmbeddings = createDefaultEmbeddings()
         }
     }
@@ -255,7 +293,7 @@ class FastClassifier(private val context: Context) {
         val pixels = IntArray(INPUT_SIZE * INPUT_SIZE)
         resized.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
 
-        // CLIP expects [1, 3, 224, 224] in CHW format
+        // MobileCLIP expects [1, 3, 256, 256] in CHW format
         val floatBuffer = FloatBuffer.allocate(3 * INPUT_SIZE * INPUT_SIZE)
 
         // Channel-first format (CHW)

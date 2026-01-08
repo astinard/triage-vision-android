@@ -4,6 +4,7 @@ On-device nursing triage vision system for Mason Scan 600. HIPAA-compliant patie
 
 ## Features
 
+- **Fast CLIP Classification**: MobileCLIP-S1 provides real-time (~200ms) patient state classification
 - **Continuous Motion Monitoring**: YOLO11n detects patient movement, stillness, falls
 - **Intelligent Scene Analysis**: SmolVLM-500M provides natural language observations
 - **Auto-Charting**: Generates structured nursing notes in HL7 FHIR format
@@ -20,9 +21,11 @@ On-device nursing triage vision system for Mason Scan 600. HIPAA-compliant patie
 ## Architecture
 
 ```
-Camera → Fast Pipeline (YOLO11n/NCNN) → Motion/Pose Detection
-              ↓ (triggers)
-         Slow Pipeline (SmolVLM/llama.cpp) → Scene Understanding
+Camera → Fast Pipeline (MobileCLIP-S1/ONNX) → Real-time Classification
+              ↓                                  (position, alertness, activity, comfort, safety)
+         YOLO11n/NCNN → Motion/Pose Detection
+              ↓ (triggers on events)
+         Slow Pipeline (SmolVLM/llama.cpp) → Detailed Scene Understanding
               ↓
          Auto-Charting Engine → HL7 FHIR Output
 ```
@@ -54,10 +57,15 @@ cd triage-vision-android
 
 ### Models Required
 
-| Model | Size | Download |
-|-------|------|----------|
-| yolo11n.ncnn | ~5MB | [Ultralytics](https://github.com/ultralytics/ultralytics) |
-| smolvlm-500m-q4_k_s.gguf | ~293MB | [HuggingFace](https://huggingface.co/mradermacher/SmolVLM-500M-Instruct-GGUF) |
+| Model | Size | Purpose |
+|-------|------|---------|
+| mobileclip_visual.onnx | ~85MB | Fast CLIP classification (MobileCLIP-S1) |
+| nursing_text_embeddings.bin | ~56KB | Pre-computed text embeddings for nursing labels |
+| yolo11n.ncnn | ~5MB | Motion/object detection |
+| SmolVLM-500M-Instruct-Q8_0.gguf | ~437MB | Vision-language model for scene understanding |
+| mmproj-SmolVLM-500M-Instruct-Q8_0.gguf | ~109MB | Vision projection for SmolVLM |
+
+Run `python scripts/export_mobileclip.py` to generate CLIP model and embeddings.
 
 ## Project Structure
 
@@ -72,7 +80,8 @@ triage-vision-android/
 ├── docs/
 │   └── ARCHITECTURE.md
 ├── scripts/
-│   └── download_models.sh
+│   ├── download_models.sh
+│   └── export_mobileclip.py          # Export MobileCLIP to ONNX
 └── README.md
 ```
 
