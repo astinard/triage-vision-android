@@ -4,6 +4,10 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.util.Log
+import com.triage.vision.backend.BackendRegistry
+import com.triage.vision.backend.BackendType
+import com.triage.vision.backend.OnnxBackend
+import com.triage.vision.backend.QnnBackend
 import com.triage.vision.camera.MediaPipePoseDetector
 import com.triage.vision.classifier.FastClassifier
 import com.triage.vision.data.AppDatabase
@@ -69,6 +73,16 @@ class TriageVisionApp : Application() {
 
         Log.i(TAG, "Triage Vision App starting...")
 
+        // Register vision backends
+        registerBackends()
+
+        // Detect and log device capabilities
+        val capabilities = BackendRegistry.detectCapabilities(this)
+        Log.i(TAG, "Device: ${capabilities.getSummary()}")
+        if (BackendRegistry.isMasonScan600()) {
+            Log.i(TAG, "Running on Mason Scan 600 target device!")
+        }
+
         // Create notification channels
         createNotificationChannels()
 
@@ -83,6 +97,19 @@ class TriageVisionApp : Application() {
             database.observationDao()
             Log.i(TAG, "Database initialized")
         }
+    }
+
+    /**
+     * Register available vision processing backends
+     */
+    private fun registerBackends() {
+        // Register QNN backend (for Mason Scan 600 with QCM6490)
+        BackendRegistry.register(BackendType.QNN) { QnnBackend() }
+
+        // Register ONNX Runtime backend (default for most devices)
+        BackendRegistry.register(BackendType.ONNX) { OnnxBackend() }
+
+        Log.i(TAG, "Registered backends: ${BackendRegistry.getRegisteredTypes()}")
     }
 
     private fun createNotificationChannels() {

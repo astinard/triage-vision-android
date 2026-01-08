@@ -30,6 +30,29 @@ Camera → Fast Pipeline (MobileCLIP-S1/ONNX) → Real-time Classification
          Auto-Charting Engine → HL7 FHIR Output
 ```
 
+### Backend Abstraction
+
+The app uses a pluggable backend system for hardware acceleration:
+
+```
+┌─────────────────────────────────────┐
+│         VisionBackend Interface      │
+└─────────────────┬───────────────────┘
+                  │
+┌─────────────────▼───────────────────┐
+│          BackendRegistry             │
+│  Auto-selects: QNN → NNAPI → CPU    │
+└────┬────────────┬───────────────────┘
+     │            │
+┌────▼────┐ ┌─────▼─────┐
+│QnnBackend│ │OnnxBackend │
+│(QCM6490) │ │ (default)  │
+└─────────┘ └───────────┘
+```
+
+- **QNN Backend**: Qualcomm Neural Network SDK for 10 TOPS NPU on Mason Scan 600
+- **ONNX Backend**: ONNX Runtime with NNAPI delegate (fallback)
+
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed design.
 
 ## Quick Start
