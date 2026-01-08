@@ -61,7 +61,7 @@ class MonitoringService : Service(), LifecycleOwner {
         const val BROADCAST_ALERT = "com.triage.vision.ALERT"
 
         // Configuration
-        private const val VLM_INTERVAL_MS = 2 * 1000L // 2 seconds
+        private const val VLM_FALLBACK_INTERVAL_MS = 5 * 60 * 1000L // 5 minutes fallback
         private const val WAKE_LOCK_TIMEOUT = 24 * 60 * 60 * 1000L // 24 hours max
     }
 
@@ -74,6 +74,7 @@ class MonitoringService : Service(), LifecycleOwner {
     private lateinit var fastPipeline: FastPipeline
     private lateinit var slowPipeline: SlowPipeline
     private lateinit var fastClassifier: FastClassifier
+    private lateinit var vlmEventScheduler: VlmEventScheduler
 
     // Camera
     private var cameraProvider: ProcessCameraProvider? = null
@@ -203,6 +204,15 @@ class MonitoringService : Service(), LifecycleOwner {
         slowPipeline = app.slowPipeline
         fastClassifier = app.fastClassifier
 
+        // Initialize event-driven VLM scheduler
+        vlmEventScheduler = VlmEventScheduler { reason ->
+            serviceScope.launch {
+                if (!_monitoringState.value.isAnalyzing) {
+                    runVlmAnalysis(reason)
+                }
+            }
+        }
+
         cameraExecutor = Executors.newSingleThreadExecutor()
 
         // Initialize CLIP classifier in background
@@ -257,7 +267,8 @@ class MonitoringService : Service(), LifecycleOwner {
         // Start camera
         startCamera()
 
-        // Start VLM scheduler
+        // Reset and start VLM scheduler
+        vlmEventScheduler.reset()
         startVlmScheduler()
 
         // Collect fast pipeline alerts
@@ -464,9 +475,15 @@ class MonitoringService : Service(), LifecycleOwner {
                 Log.d(TAG, "CLIP: ${clipResult.toSummary()} (${clipResult.inferenceTimeMs}ms)")
             }
 
-            // Check for safety concerns
+            // Process through event scheduler - this triggers VLM on state changes
+            val triggerEvent = vlmEventScheduler.processClassification(clipResult)
+            triggerEvent?.let { event ->
+                Log.i(TAG, "CLIP triggered VLM: ${event.reason}")
+            }
+
+            // Check for safety concerns (logging only, VLM trigger handled by scheduler)
             clipResult.getPrimaryConcern()?.let { concern ->
-                Log.w(TAG, "CLIP safety concern: $concern")
+                Log.w(TAG, "CLIP safety concern detected: $concern")
             }
 
         } catch (e: Exception) {
@@ -477,14 +494,24 @@ class MonitoringService : Service(), LifecycleOwner {
     private fun startVlmScheduler() {
         vlmSchedulerJob?.cancel()
         vlmSchedulerJob = serviceScope.launch {
-            Log.i(TAG, "VLM scheduler started - first analysis in ${VLM_INTERVAL_MS}ms")
+            Log.i(TAG, "VLM event scheduler started - fallback every ${VLM_FALLBACK_INTERVAL_MS / 1000}s")
 
+            // Trigger initial VLM analysis after a short delay
+            delay(5000)
+            if (isMonitoring && !_monitoringState.value.isAnalyzing) {
+                Log.i(TAG, "Initial VLM analysis")
+                runVlmAnalysis("initial")
+            }
+
+            // Periodic fallback check (event-driven triggers happen in runClipClassification)
             while (isMonitoring) {
-                delay(VLM_INTERVAL_MS)
+                delay(30_000)  // Check every 30 seconds if fallback is needed
 
                 if (isMonitoring && !_monitoringState.value.isAnalyzing) {
-                    Log.i(TAG, "VLM scheduler triggering analysis, lastFrame=${lastFrame != null}")
-                    runVlmAnalysis("interval")
+                    if (vlmEventScheduler.shouldRunPeriodicFallback()) {
+                        Log.i(TAG, "VLM fallback scheduler triggering analysis")
+                        vlmEventScheduler.forceTrigger("periodic_fallback")
+                    }
                 }
             }
 
@@ -553,17 +580,15 @@ class MonitoringService : Service(), LifecycleOwner {
 
         sendAlertNotification(title, message)
 
-        // Trigger VLM for context
-        if (!_monitoringState.value.isAnalyzing) {
-            val triggeredBy = when (alert) {
-                is FastPipeline.Alert.FallDetected -> "fall"
-                is FastPipeline.Alert.DepthVerifiedFall -> "depth_fall"
-                is FastPipeline.Alert.LeavingBedZone -> "leaving_bed"
-                is FastPipeline.Alert.Stillness -> "stillness"
-                is FastPipeline.Alert.PoseChange -> "pose_change"
-            }
-            runVlmAnalysis(triggeredBy)
+        // Trigger VLM for context via scheduler (respects min interval)
+        val triggeredBy = when (alert) {
+            is FastPipeline.Alert.FallDetected -> "alert_fall"
+            is FastPipeline.Alert.DepthVerifiedFall -> "alert_depth_fall"
+            is FastPipeline.Alert.LeavingBedZone -> "alert_leaving_bed"
+            is FastPipeline.Alert.Stillness -> "alert_stillness"
+            is FastPipeline.Alert.PoseChange -> "alert_pose_change"
         }
+        vlmEventScheduler.forceTrigger(triggeredBy)
 
         // Clear alert after handling
         fastPipeline.clearAlert()
