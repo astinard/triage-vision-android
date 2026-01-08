@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.util.Log
 import com.triage.vision.camera.MediaPipePoseDetector
+import com.triage.vision.classifier.FastClassifier
 import com.triage.vision.data.AppDatabase
 import com.triage.vision.data.ObservationRepository
 import com.triage.vision.native.NativeBridge
@@ -48,6 +49,9 @@ class TriageVisionApp : Application() {
     val fastPipeline: FastPipeline by lazy { FastPipeline(nativeBridge, null) }
     val slowPipeline: SlowPipeline by lazy { SlowPipeline(nativeBridge) }
     val chartEngine: AutoChartEngine by lazy { AutoChartEngine() }
+
+    // CLIP-based fast classifier for real-time position/alertness detection
+    val fastClassifier: FastClassifier by lazy { FastClassifier(this) }
 
     // Database
     val database: AppDatabase by lazy { AppDatabase.getInstance(this) }

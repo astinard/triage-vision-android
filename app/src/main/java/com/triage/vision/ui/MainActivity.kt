@@ -34,6 +34,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.triage.vision.camera.DepthCameraManager
 import com.triage.vision.camera.DepthFrameSynchronizer
+import com.triage.vision.classifier.NursingLabels
 import com.triage.vision.data.ObservationEntity
 import com.triage.vision.pipeline.FastPipeline
 import com.triage.vision.pipeline.SlowPipeline
@@ -372,7 +373,18 @@ fun MonitoringScreen(
                 inBedZone = uiState.inBedZone,
                 isBackgroundMode = uiState.useBackgroundService && uiState.isMonitoring,
                 lastObservation = uiState.lastObservation,
-                isAnalyzing = uiState.isAnalyzing
+                isAnalyzing = uiState.isAnalyzing,
+                // CLIP classification
+                clipEnabled = uiState.clipEnabled,
+                clipPosition = uiState.clipPosition,
+                clipPositionConfidence = uiState.clipPositionConfidence,
+                clipAlertness = uiState.clipAlertness,
+                clipAlertnessConfidence = uiState.clipAlertnessConfidence,
+                clipActivity = uiState.clipActivity,
+                clipActivityConfidence = uiState.clipActivityConfidence,
+                clipSafety = uiState.clipSafety,
+                clipSafetyConfidence = uiState.clipSafetyConfidence,
+                clipInferenceMs = uiState.clipInferenceMs
             )
         }
 
@@ -532,7 +544,18 @@ fun DetectionOverlay(
     inBedZone: Boolean = false,
     isBackgroundMode: Boolean = false,
     lastObservation: SlowPipeline.Observation? = null,
-    isAnalyzing: Boolean = false
+    isAnalyzing: Boolean = false,
+    // CLIP classification
+    clipEnabled: Boolean = false,
+    clipPosition: NursingLabels.Position = NursingLabels.Position.LYING_SUPINE,
+    clipPositionConfidence: Float = 0f,
+    clipAlertness: NursingLabels.Alertness = NursingLabels.Alertness.EYES_CLOSED,
+    clipAlertnessConfidence: Float = 0f,
+    clipActivity: NursingLabels.Activity = NursingLabels.Activity.STILL,
+    clipActivityConfidence: Float = 0f,
+    clipSafety: NursingLabels.SafetyConcern = NursingLabels.SafetyConcern.NONE,
+    clipSafetyConfidence: Float = 0f,
+    clipInferenceMs: Long = 0
 ) {
     Column(
         modifier = Modifier
@@ -632,6 +655,70 @@ fun DetectionOverlay(
             }
         }
 
+        // CLIP Real-time Classification Panel
+        if (clipEnabled && personDetected) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Surface(
+                color = Color(0xFF1A1A2E).copy(alpha = 0.9f),
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "CLIP Classification",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color(0xFF00D9FF),
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${clipInferenceMs}ms",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.Gray
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // Position
+                    ClipClassificationRow(
+                        label = "Position",
+                        value = clipPosition.label.replace("_", " "),
+                        confidence = clipPositionConfidence,
+                        color = Color(0xFF4CAF50)
+                    )
+
+                    // Alertness
+                    ClipClassificationRow(
+                        label = "Alertness",
+                        value = clipAlertness.label.replace("_", " "),
+                        confidence = clipAlertnessConfidence,
+                        color = Color(0xFFFF9800)
+                    )
+
+                    // Activity
+                    ClipClassificationRow(
+                        label = "Activity",
+                        value = clipActivity.label.replace("_", " "),
+                        confidence = clipActivityConfidence,
+                        color = Color(0xFF2196F3)
+                    )
+
+                    // Safety (only show if not "none" or has high confidence)
+                    if (clipSafety != NursingLabels.SafetyConcern.NONE || clipSafetyConfidence > 0.3f) {
+                        ClipClassificationRow(
+                            label = "Safety",
+                            value = clipSafety.label.replace("_", " "),
+                            confidence = clipSafetyConfidence,
+                            color = if (clipSafety != NursingLabels.SafetyConcern.NONE)
+                                Color(0xFFF44336) else Color(0xFF4CAF50)
+                        )
+                    }
+                }
+            }
+        }
+
         // VLM Scene Analysis - at bottom for visibility
         lastObservation?.let { obs ->
             if (obs.chartNote.isNotBlank() && obs.chartNote != "VLM output could not be parsed") {
@@ -670,6 +757,57 @@ fun DetectionOverlay(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Row component for displaying a CLIP classification result
+ */
+@Composable
+fun ClipClassificationRow(
+    label: String,
+    value: String,
+    confidence: Float,
+    color: Color
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .padding(end = 4.dp)
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    drawCircle(color = color)
+                }
+            }
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.Gray
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "${(confidence * 100).toInt()}%",
+                style = MaterialTheme.typography.labelSmall,
+                color = color
+            )
         }
     }
 }

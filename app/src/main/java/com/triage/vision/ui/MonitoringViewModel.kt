@@ -11,6 +11,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.triage.vision.TriageVisionApp
 import com.triage.vision.camera.DepthCameraManager
+import com.triage.vision.classifier.NursingLabels
 import com.triage.vision.data.AlertEntity
 import com.triage.vision.data.ObservationEntity
 import com.triage.vision.pipeline.FastPipeline
@@ -90,7 +91,18 @@ class MonitoringViewModel : ViewModel() {
         val inBedZone: Boolean = false,
         // Service connection
         val isServiceBound: Boolean = false,
-        val useBackgroundService: Boolean = true
+        val useBackgroundService: Boolean = true,
+        // CLIP classification (real-time ~200ms)
+        val clipPosition: NursingLabels.Position = NursingLabels.Position.LYING_SUPINE,
+        val clipPositionConfidence: Float = 0f,
+        val clipAlertness: NursingLabels.Alertness = NursingLabels.Alertness.EYES_CLOSED,
+        val clipAlertnessConfidence: Float = 0f,
+        val clipActivity: NursingLabels.Activity = NursingLabels.Activity.STILL,
+        val clipActivityConfidence: Float = 0f,
+        val clipSafety: NursingLabels.SafetyConcern = NursingLabels.SafetyConcern.NONE,
+        val clipSafetyConfidence: Float = 0f,
+        val clipInferenceMs: Long = 0,
+        val clipEnabled: Boolean = false
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -162,7 +174,18 @@ class MonitoringViewModel : ViewModel() {
                         lastObservation = serviceState.lastObservation,
                         frameCount = serviceState.frameCount,
                         fps = serviceState.fps,
-                        landmarks = serviceState.landmarks
+                        landmarks = serviceState.landmarks,
+                        // CLIP classification results
+                        clipPosition = serviceState.clipPosition,
+                        clipPositionConfidence = serviceState.clipPositionConfidence,
+                        clipAlertness = serviceState.clipAlertness,
+                        clipAlertnessConfidence = serviceState.clipAlertnessConfidence,
+                        clipActivity = serviceState.clipActivity,
+                        clipActivityConfidence = serviceState.clipActivityConfidence,
+                        clipSafety = serviceState.clipSafety,
+                        clipSafetyConfidence = serviceState.clipSafetyConfidence,
+                        clipInferenceMs = serviceState.clipInferenceMs,
+                        clipEnabled = serviceState.clipEnabled
                     )
                 }
             }

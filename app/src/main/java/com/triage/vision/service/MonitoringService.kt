@@ -23,6 +23,8 @@ import com.triage.vision.R
 import com.triage.vision.TriageVisionApp
 import com.triage.vision.data.AlertEntity
 import com.triage.vision.data.ObservationEntity
+import com.triage.vision.classifier.FastClassifier
+import com.triage.vision.classifier.NursingLabels
 import com.triage.vision.pipeline.FastPipeline
 import com.triage.vision.pipeline.SlowPipeline
 import com.triage.vision.ui.MainActivity
@@ -71,6 +73,7 @@ class MonitoringService : Service(), LifecycleOwner {
     private lateinit var app: TriageVisionApp
     private lateinit var fastPipeline: FastPipeline
     private lateinit var slowPipeline: SlowPipeline
+    private lateinit var fastClassifier: FastClassifier
 
     // Camera
     private var cameraProvider: ProcessCameraProvider? = null
@@ -103,7 +106,18 @@ class MonitoringService : Service(), LifecycleOwner {
         val lastObservation: SlowPipeline.Observation? = null,
         val frameCount: Long = 0,
         val fps: Float = 0f,
-        val landmarks: List<FastPipeline.PoseLandmark> = emptyList()
+        val landmarks: List<FastPipeline.PoseLandmark> = emptyList(),
+        // CLIP classification results
+        val clipPosition: NursingLabels.Position = NursingLabels.Position.LYING_SUPINE,
+        val clipPositionConfidence: Float = 0f,
+        val clipAlertness: NursingLabels.Alertness = NursingLabels.Alertness.EYES_CLOSED,
+        val clipAlertnessConfidence: Float = 0f,
+        val clipActivity: NursingLabels.Activity = NursingLabels.Activity.STILL,
+        val clipActivityConfidence: Float = 0f,
+        val clipSafety: NursingLabels.SafetyConcern = NursingLabels.SafetyConcern.NONE,
+        val clipSafetyConfidence: Float = 0f,
+        val clipInferenceMs: Long = 0,
+        val clipEnabled: Boolean = false
     )
 
     private val _monitoringState = MutableStateFlow(MonitoringState())
@@ -187,8 +201,16 @@ class MonitoringService : Service(), LifecycleOwner {
         app = TriageVisionApp.instance
         fastPipeline = app.fastPipeline
         slowPipeline = app.slowPipeline
+        fastClassifier = app.fastClassifier
 
         cameraExecutor = Executors.newSingleThreadExecutor()
+
+        // Initialize CLIP classifier in background
+        serviceScope.launch {
+            val success = fastClassifier.initialize()
+            Log.i(TAG, "FastClassifier initialized: $success (using real model: ${fastClassifier.isUsingRealModel()})")
+            _monitoringState.update { it.copy(clipEnabled = success) }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -370,6 +392,10 @@ class MonitoringService : Service(), LifecycleOwner {
     /**
      * Internal frame processing - shared by processFrame and processExternalFrame
      */
+    // CLIP classification runs every N frames to save CPU
+    private var clipFrameCounter = 0
+    private val CLIP_FRAME_INTERVAL = 5  // Run CLIP every 5 frames
+
     private fun processFrameInternal(bitmap: Bitmap) {
         try {
             // Update FPS
@@ -382,10 +408,10 @@ class MonitoringService : Service(), LifecycleOwner {
                 fpsUpdateTime = now
             }
 
-            // Run fast pipeline
+            // Run fast pipeline (YOLO)
             val result = fastPipeline.processFrame(bitmap)
 
-            // Update state with landmarks
+            // Update state with YOLO results
             _monitoringState.update { state ->
                 state.copy(
                     personDetected = result.personDetected,
@@ -398,8 +424,53 @@ class MonitoringService : Service(), LifecycleOwner {
                 )
             }
 
+            // Run CLIP classification every N frames (when person detected)
+            clipFrameCounter++
+            if (clipFrameCounter >= CLIP_FRAME_INTERVAL && result.personDetected && fastClassifier.isReady()) {
+                clipFrameCounter = 0
+                serviceScope.launch {
+                    runClipClassification(bitmap)
+                }
+            }
+
         } catch (e: Exception) {
             Log.e(TAG, "Frame processing error: ${e.message}")
+        }
+    }
+
+    /**
+     * Run CLIP classification on current frame
+     */
+    private suspend fun runClipClassification(bitmap: Bitmap) {
+        try {
+            val clipResult = fastClassifier.classify(bitmap)
+
+            _monitoringState.update { state ->
+                state.copy(
+                    clipPosition = clipResult.position,
+                    clipPositionConfidence = clipResult.positionConfidence,
+                    clipAlertness = clipResult.alertness,
+                    clipAlertnessConfidence = clipResult.alertnessConfidence,
+                    clipActivity = clipResult.activity,
+                    clipActivityConfidence = clipResult.activityConfidence,
+                    clipSafety = clipResult.safety,
+                    clipSafetyConfidence = clipResult.safetyConfidence,
+                    clipInferenceMs = clipResult.inferenceTimeMs
+                )
+            }
+
+            // Log classification result periodically
+            if (fastPipeline.getFrameCount() % 30 == 0L) {
+                Log.d(TAG, "CLIP: ${clipResult.toSummary()} (${clipResult.inferenceTimeMs}ms)")
+            }
+
+            // Check for safety concerns
+            clipResult.getPrimaryConcern()?.let { concern ->
+                Log.w(TAG, "CLIP safety concern: $concern")
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "CLIP classification error: ${e.message}")
         }
     }
 
