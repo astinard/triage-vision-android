@@ -105,33 +105,34 @@ std::vector<Detection> YoloDetector::detect(const uint8_t* pixels, int width, in
 
     LOGI("YOLO output: w=%d h=%d c=%d", out.w, out.h, out.c);
 
-    // YOLO11 NCNN export gives [84, 8400] - need to handle transpose
-    // out.w = num_classes + 4 = 84
-    // out.h = num_detections = 8400
+    // YOLO11 NCNN output is [84, 8400] where:
+    // - 84 rows = 4 (bbox: cx, cy, w, h) + 80 (class probs)
+    // - 8400 columns = number of detections
+    // So out.h = 84 (features), out.w = 8400 (detections)
     const int num_classes = 80;
-    const int num_dets = out.h;
-    const int feat_dim = out.w;
+    const int num_dets = out.w;  // 8400 detections
+    const int feat_dim = out.h;  // 84 features per detection
 
     for (int i = 0; i < num_dets; i++) {
-        const float* row = out.row(i);
+        // Access column i - each detection is a column, not a row
+        // row(j) gives feature j, and we want element i from that row
+        float cx = out.row(0)[i];
+        float cy = out.row(1)[i];
+        float bw = out.row(2)[i];
+        float bh = out.row(3)[i];
 
-        // bbox: first 4 values
-        float cx = row[0];
-        float cy = row[1];
-        float bw = row[2];
-        float bh = row[3];
-
-        // Find best class (values 4-83 are class probs, already sigmoided)
+        // Find best class (rows 4-83 are class probs)
         int best_class = 0;
         float best_score = 0;
         for (int j = 4; j < feat_dim && j < 4 + num_classes; j++) {
-            if (row[j] > best_score) {
-                best_score = row[j];
+            float score = out.row(j)[i];
+            if (score > best_score) {
+                best_score = score;
                 best_class = j - 4;
             }
         }
 
-        // In YOLO11, class probability IS the confidence (no separate objectness)
+        // In YOLO11, class probability IS the confidence
         float confidence = best_score;
         if (confidence < conf_threshold_) continue;
 

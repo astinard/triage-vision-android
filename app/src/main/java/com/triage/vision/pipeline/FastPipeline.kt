@@ -2,6 +2,7 @@ package com.triage.vision.pipeline
 
 import android.graphics.Bitmap
 import com.triage.vision.camera.DepthCameraManager
+import com.triage.vision.camera.MediaPipePoseDetector
 import com.triage.vision.native.NativeBridge
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -11,17 +12,19 @@ import kotlinx.serialization.json.Json
 /**
  * Fast Pipeline: Continuous motion/pose detection
  *
- * Uses NCNN + YOLO11n for real-time analysis at 15-30 FPS.
+ * Uses NCNN + YOLO11n for person detection and motion analysis.
+ * Uses MediaPipe for accurate 33-point pose estimation.
  * Triggers alerts and VLM analysis when conditions are met.
  */
 class FastPipeline(
     private val nativeBridge: NativeBridge,
+    private val poseDetector: MediaPipePoseDetector? = null,
     private val config: FastPipelineConfig = FastPipelineConfig()
 ) {
 
     @Serializable
     data class FastPipelineConfig(
-        val stillnessAlertSeconds: Int = 1800, // 30 minutes
+        val stillnessAlertSeconds: Int = 30, // 30 seconds
         val fallDetectionEnabled: Boolean = true,
         val poseTrackingEnabled: Boolean = true
     )
@@ -30,9 +33,12 @@ class FastPipeline(
     data class DetectionResult(
         val personDetected: Boolean = false,
         val pose: Pose = Pose.UNKNOWN,
+        val poseConfidence: Float = 0f,
         val motionLevel: Float = 0f,
         val fallDetected: Boolean = false,
         val secondsSinceLastMotion: Long = 0,
+        // Pose landmarks for skeleton drawing (33 points)
+        val landmarks: List<PoseLandmark> = emptyList(),
         // Depth-enhanced fields
         val depthAvailable: Boolean = false,
         val depthFallDetected: Boolean = false,
@@ -43,6 +49,13 @@ class FastPipeline(
         val bedProximityMeters: Float = 0f,
         val inBedZone: Boolean = false,
         val position3D: Position3D? = null
+    )
+
+    @Serializable
+    data class PoseLandmark(
+        val x: Float,  // 0-1 normalized
+        val y: Float,  // 0-1 normalized
+        val visibility: Float
     )
 
     @Serializable
@@ -86,7 +99,7 @@ class FastPipeline(
     fun processFrame(bitmap: Bitmap): DetectionResult {
         frameCount++
 
-        // Run native detection
+        // Run native detection for person detection and motion
         val resultJson = nativeBridge.detectMotion(bitmap)
         val personDetected = nativeBridge.isPersonDetected(bitmap)
         val motionLevel = nativeBridge.getMotionLevel()
@@ -98,17 +111,45 @@ class FastPipeline(
 
         val secondsSinceMotion = (System.currentTimeMillis() - lastMotionTimestamp) / 1000
 
-        // Parse pose from detection result
-        val currentPose = parsePose(resultJson)
+        // Run MediaPipe pose detection for accurate pose and skeleton
+        // Note: MediaPipe crashes on older devices (Pixel 2), so we catch errors gracefully
+        var currentPose = Pose.UNKNOWN
+        var poseConfidence = 0f
+        var landmarks = emptyList<PoseLandmark>()
+
+        if (personDetected && poseDetector != null) {
+            try {
+                val poseResult = poseDetector.detect(bitmap)
+                if (poseResult.detected) {
+                    currentPose = when (poseResult.pose) {
+                        MediaPipePoseDetector.Pose.LYING -> Pose.LYING
+                        MediaPipePoseDetector.Pose.SITTING -> Pose.SITTING
+                        MediaPipePoseDetector.Pose.STANDING -> Pose.STANDING
+                        MediaPipePoseDetector.Pose.FALLEN -> Pose.FALLEN
+                        else -> Pose.UNKNOWN
+                    }
+                    poseConfidence = poseResult.confidence
+                    landmarks = poseResult.landmarks.map { lm ->
+                        PoseLandmark(lm.x, lm.y, lm.visibility)
+                    }
+                }
+            } catch (e: Exception) {
+                // MediaPipe may crash on older devices - continue without pose
+                android.util.Log.w("FastPipeline", "Pose detection failed: ${e.message}")
+            }
+        }
+
         val fallDetected = currentPose == Pose.FALLEN
 
         // Create result
         val result = DetectionResult(
             personDetected = personDetected,
             pose = currentPose,
+            poseConfidence = poseConfidence,
             motionLevel = motionLevel,
             fallDetected = fallDetected,
-            secondsSinceLastMotion = secondsSinceMotion
+            secondsSinceLastMotion = secondsSinceMotion,
+            landmarks = landmarks
         )
 
         // Check for alerts

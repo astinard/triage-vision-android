@@ -1,6 +1,11 @@
 package com.triage.vision.ui
 
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.graphics.Bitmap
+import android.os.IBinder
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -10,6 +15,7 @@ import com.triage.vision.data.AlertEntity
 import com.triage.vision.data.ObservationEntity
 import com.triage.vision.pipeline.FastPipeline
 import com.triage.vision.pipeline.SlowPipeline
+import com.triage.vision.service.MonitoringService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -21,7 +27,7 @@ class MonitoringViewModel : ViewModel() {
 
     companion object {
         private const val TAG = "MonitoringViewModel"
-        private const val VLM_INTERVAL_MS = 15 * 60 * 1000L // 15 minutes
+        private const val VLM_INTERVAL_MS = 2 * 1000L // 2 seconds
     }
 
     private val app = TriageVisionApp.instance
@@ -30,12 +36,43 @@ class MonitoringViewModel : ViewModel() {
     private val chartEngine = app.chartEngine
     private val repository = app.observationRepository
 
+    // Service connection
+    private var monitoringService: MonitoringService? = null
+    private var isBound = false
+    private var serviceStateJob: Job? = null
+    private var serviceAlertJob: Job? = null
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            Log.i(TAG, "Service connected")
+            val serviceBinder = binder as MonitoringService.MonitoringBinder
+            monitoringService = serviceBinder.getService()
+            isBound = true
+
+            // Tell service that UI will feed frames
+            monitoringService?.onUiBound()
+
+            // Collect service state
+            collectServiceState()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            Log.i(TAG, "Service disconnected")
+            monitoringService?.onUiUnbound()
+            monitoringService = null
+            isBound = false
+            serviceStateJob?.cancel()
+            serviceAlertJob?.cancel()
+        }
+    }
+
     // UI State
     data class UiState(
         val isMonitoring: Boolean = false,
         val isAnalyzing: Boolean = false,
         val personDetected: Boolean = false,
         val currentPose: FastPipeline.Pose = FastPipeline.Pose.UNKNOWN,
+        val poseConfidence: Float = 0f,
         val motionLevel: Float = 0f,
         val secondsSinceMotion: Long = 0,
         val lastObservation: SlowPipeline.Observation? = null,
@@ -43,12 +80,17 @@ class MonitoringViewModel : ViewModel() {
         val frameCount: Long = 0,
         val fps: Float = 0f,
         val error: String? = null,
+        // Pose landmarks for skeleton drawing (33 points)
+        val landmarks: List<FastPipeline.PoseLandmark> = emptyList(),
         // Depth sensor fields
         val depthAvailable: Boolean = false,
         val depthEnabled: Boolean = false,
         val distanceMeters: Float = 0f,
         val bedProximityMeters: Float = 0f,
-        val inBedZone: Boolean = false
+        val inBedZone: Boolean = false,
+        // Service connection
+        val isServiceBound: Boolean = false,
+        val useBackgroundService: Boolean = true
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -58,21 +100,139 @@ class MonitoringViewModel : ViewModel() {
     val recentObservations: Flow<List<ObservationEntity>> =
         repository.getRecentObservations(50)
 
-    // Frame processing
+    // Frame processing (for foreground-only mode)
     private var frameProcessingJob: Job? = null
     private var vlmSchedulerJob: Job? = null
     private var lastFrameTime = 0L
     private var frameCountForFps = 0
     private var fpsUpdateTime = 0L
+    private var lastFrame: Bitmap? = null
 
     // Current patient (set via barcode scan)
     private var currentPatientId: String? = null
 
     /**
-     * Start monitoring
+     * Bind to the MonitoringService
      */
-    fun startMonitoring() {
-        Log.i(TAG, "Starting monitoring")
+    fun bindToService(context: Context) {
+        if (isBound) return
+
+        val intent = Intent(context, MonitoringService::class.java)
+        context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        _uiState.update { it.copy(isServiceBound = true) }
+    }
+
+    /**
+     * Unbind from the MonitoringService
+     */
+    fun unbindFromService(context: Context) {
+        if (!isBound) return
+
+        // Tell service that UI is disconnecting
+        monitoringService?.onUiUnbound()
+
+        try {
+            context.unbindService(serviceConnection)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error unbinding service: ${e.message}")
+        }
+
+        isBound = false
+        monitoringService = null
+        serviceStateJob?.cancel()
+        serviceAlertJob?.cancel()
+        _uiState.update { it.copy(isServiceBound = false) }
+    }
+
+    private fun collectServiceState() {
+        val service = monitoringService ?: return
+
+        // Collect monitoring state
+        serviceStateJob = viewModelScope.launch {
+            service.monitoringState.collect { serviceState ->
+                _uiState.update { state ->
+                    state.copy(
+                        isMonitoring = serviceState.isMonitoring,
+                        isAnalyzing = serviceState.isAnalyzing,
+                        personDetected = serviceState.personDetected,
+                        currentPose = serviceState.currentPose,
+                        poseConfidence = serviceState.poseConfidence,
+                        motionLevel = serviceState.motionLevel,
+                        secondsSinceMotion = serviceState.secondsSinceMotion,
+                        lastObservation = serviceState.lastObservation,
+                        frameCount = serviceState.frameCount,
+                        fps = serviceState.fps,
+                        landmarks = serviceState.landmarks
+                    )
+                }
+            }
+        }
+
+        // Collect alerts
+        serviceAlertJob = viewModelScope.launch {
+            service.alerts.collect { alert ->
+                _uiState.update { it.copy(currentAlert = alert) }
+            }
+        }
+    }
+
+    /**
+     * Start monitoring via service (background-capable)
+     */
+    fun startMonitoringService(context: Context) {
+        Log.i(TAG, "Starting monitoring service")
+
+        val intent = Intent(context, MonitoringService::class.java).apply {
+            action = MonitoringService.ACTION_START
+            currentPatientId?.let { putExtra("patient_id", it) }
+        }
+        context.startForegroundService(intent)
+
+        // Bind to receive state updates
+        bindToService(context)
+    }
+
+    /**
+     * Stop monitoring service
+     */
+    fun stopMonitoringService(context: Context) {
+        Log.i(TAG, "Stopping monitoring service")
+
+        val intent = Intent(context, MonitoringService::class.java).apply {
+            action = MonitoringService.ACTION_STOP
+        }
+        context.startService(intent)
+
+        _uiState.update { it.copy(isMonitoring = false) }
+    }
+
+    /**
+     * Start monitoring (uses service if useBackgroundService is true)
+     */
+    fun startMonitoring(context: Context? = null) {
+        if (_uiState.value.useBackgroundService && context != null) {
+            startMonitoringService(context)
+        } else {
+            startForegroundMonitoring()
+        }
+    }
+
+    /**
+     * Stop monitoring
+     */
+    fun stopMonitoring(context: Context? = null) {
+        if (_uiState.value.useBackgroundService && context != null) {
+            stopMonitoringService(context)
+        } else {
+            stopForegroundMonitoring()
+        }
+    }
+
+    /**
+     * Start foreground-only monitoring (no service)
+     */
+    private fun startForegroundMonitoring() {
+        Log.i(TAG, "Starting foreground monitoring")
         _uiState.update { it.copy(isMonitoring = true, error = null) }
 
         // Start VLM scheduler
@@ -89,10 +249,10 @@ class MonitoringViewModel : ViewModel() {
     }
 
     /**
-     * Stop monitoring
+     * Stop foreground-only monitoring
      */
-    fun stopMonitoring() {
-        Log.i(TAG, "Stopping monitoring")
+    private fun stopForegroundMonitoring() {
+        Log.i(TAG, "Stopping foreground monitoring")
         _uiState.update { it.copy(isMonitoring = false) }
 
         frameProcessingJob?.cancel()
@@ -100,10 +260,28 @@ class MonitoringViewModel : ViewModel() {
     }
 
     /**
-     * Process a camera frame through the fast pipeline
+     * Toggle background service mode
+     */
+    fun setBackgroundServiceEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(useBackgroundService = enabled) }
+    }
+
+    /**
+     * Process a camera frame through the fast pipeline (foreground mode)
+     * When using background service, sends frame to service for processing
      */
     fun processFrame(bitmap: Bitmap) {
+        // Always send frames to service when bound (even if isMonitoring hasn't propagated yet)
+        if (isBound && monitoringService != null) {
+            monitoringService?.processExternalFrame(bitmap)
+            // If service is monitoring, we're done - service handles everything
+            if (_uiState.value.isMonitoring) return
+        }
+
         if (!_uiState.value.isMonitoring) return
+
+        // Store frame for VLM
+        lastFrame = bitmap
 
         viewModelScope.launch(Dispatchers.Default) {
             try {
@@ -120,14 +298,16 @@ class MonitoringViewModel : ViewModel() {
                 // Run fast pipeline
                 val result = fastPipeline.processFrame(bitmap)
 
-                // Update UI state
+                // Update UI state with landmarks
                 _uiState.update { state ->
                     state.copy(
                         personDetected = result.personDetected,
                         currentPose = result.pose,
+                        poseConfidence = result.poseConfidence,
                         motionLevel = result.motionLevel,
                         secondsSinceMotion = result.secondsSinceLastMotion,
-                        frameCount = fastPipeline.getFrameCount()
+                        frameCount = fastPipeline.getFrameCount(),
+                        landmarks = result.landmarks
                     )
                 }
 
@@ -144,6 +324,14 @@ class MonitoringViewModel : ViewModel() {
      */
     fun processFrameWithDepth(bitmap: Bitmap, depthFrame: DepthCameraManager.DepthFrame) {
         if (!_uiState.value.isMonitoring) return
+
+        // If using service, let service handle it
+        if (_uiState.value.useBackgroundService && isBound) {
+            return
+        }
+
+        // Store frame for VLM
+        lastFrame = bitmap
 
         viewModelScope.launch(Dispatchers.Default) {
             try {
@@ -195,6 +383,12 @@ class MonitoringViewModel : ViewModel() {
      * Trigger VLM analysis manually or on schedule
      */
     fun triggerVlmAnalysis(triggeredBy: String = "manual") {
+        // If using service, delegate to service
+        if (_uiState.value.useBackgroundService && isBound) {
+            monitoringService?.triggerVlmAnalysis()
+            return
+        }
+
         if (_uiState.value.isAnalyzing) {
             Log.w(TAG, "VLM analysis already in progress")
             return
@@ -210,10 +404,7 @@ class MonitoringViewModel : ViewModel() {
         _uiState.update { it.copy(isAnalyzing = true) }
 
         try {
-            // TODO: Get current frame from camera
-            // For now, this is a placeholder - in real implementation,
-            // we'd capture a frame from the camera preview
-            val bitmap = getCurrentFrame()
+            val bitmap = lastFrame
 
             if (bitmap != null) {
                 val observation = withContext(Dispatchers.Default) {
@@ -316,6 +507,7 @@ class MonitoringViewModel : ViewModel() {
      */
     fun setPatientId(patientId: String?) {
         currentPatientId = patientId
+        monitoringService?.setPatientId(patientId)
         Log.i(TAG, "Patient ID set: $patientId")
     }
 
@@ -346,14 +538,10 @@ class MonitoringViewModel : ViewModel() {
         return """{"resourceType": "Bundle", "type": "collection", "entry": [${fhirResources.joinToString(",")}]}"""
     }
 
-    // Placeholder - in real implementation, this would capture from CameraX
-    private fun getCurrentFrame(): Bitmap? {
-        // TODO: Implement frame capture from CameraX preview
-        return null
-    }
-
     override fun onCleared() {
         super.onCleared()
-        stopMonitoring()
+        stopForegroundMonitoring()
+        serviceStateJob?.cancel()
+        serviceAlertJob?.cancel()
     }
 }

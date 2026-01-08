@@ -53,7 +53,7 @@ class ObservationRepository(
                 )
             }
         )
-        val fhirJson = chartEngine.exportAsFHIR(chartEntry)
+        val fhirJson = chartEngine.exportAsFHIRObservation(chartEntry)
 
         // Create entity
         val entity = ObservationEntity.fromObservation(

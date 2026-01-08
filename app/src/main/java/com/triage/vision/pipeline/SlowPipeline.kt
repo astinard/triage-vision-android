@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import com.triage.vision.native.NativeBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -30,10 +31,14 @@ class SlowPipeline(
         val timestamp: String = "",
         val position: String = "unknown",
         val alertness: String = "unknown",
+        @SerialName("movement_level")
         val movementLevel: String = "unknown",
+        @SerialName("equipment_visible")
         val equipmentVisible: List<String> = emptyList(),
         val concerns: List<String> = emptyList(),
+        @SerialName("comfort_assessment")
         val comfortAssessment: String = "unknown",
+        @SerialName("chart_note")
         val chartNote: String = ""
     )
 
@@ -79,15 +84,20 @@ Respond ONLY with valid JSON in this exact format:
         val prompt = customPrompt ?: DEFAULT_PROMPT
         val startTime = System.currentTimeMillis()
 
+        android.util.Log.i("SlowPipeline", "Calling native VLM with frame ${bitmap.width}x${bitmap.height}")
+
         // Run native VLM inference
         val resultJson = nativeBridge.analyzeScene(bitmap, prompt)
 
         val inferenceTime = System.currentTimeMillis() - startTime
         android.util.Log.i("SlowPipeline", "VLM inference took ${inferenceTime}ms")
+        android.util.Log.i("SlowPipeline", "VLM raw result: $resultJson")
 
         // Parse result
         val observation = parseObservation(resultJson)
         lastAnalysisTimestamp = System.currentTimeMillis()
+
+        android.util.Log.i("SlowPipeline", "Parsed observation: position=${observation.position}, chartNote=${observation.chartNote}")
 
         observation.copy(
             timestamp = java.time.Instant.now().toString()

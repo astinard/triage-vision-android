@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.util.Log
+import com.triage.vision.camera.MediaPipePoseDetector
 import com.triage.vision.data.AppDatabase
 import com.triage.vision.data.ObservationRepository
 import com.triage.vision.native.NativeBridge
@@ -41,7 +42,10 @@ class TriageVisionApp : Application() {
 
     // Core components (lazy initialized)
     val nativeBridge: NativeBridge by lazy { NativeBridge() }
-    val fastPipeline: FastPipeline by lazy { FastPipeline(nativeBridge) }
+    // MediaPipe crashes on older devices (Pixel 2, etc.) - disable for now
+    // TODO: Enable on newer devices with compatible GPU (API 28+, Adreno 6xx+)
+    // val poseDetector: MediaPipePoseDetector by lazy { MediaPipePoseDetector(this) }
+    val fastPipeline: FastPipeline by lazy { FastPipeline(nativeBridge, null) }
     val slowPipeline: SlowPipeline by lazy { SlowPipeline(nativeBridge) }
     val chartEngine: AutoChartEngine by lazy { AutoChartEngine() }
 
@@ -226,6 +230,7 @@ class TriageVisionApp : Application() {
 
     override fun onTerminate() {
         super.onTerminate()
+        // poseDetector.close()  // Disabled - MediaPipe crashes on older devices
         nativeBridge.cleanup()
     }
 }

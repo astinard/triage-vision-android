@@ -83,7 +83,7 @@ private:
 #endif
 
     // Detection parameters
-    float conf_threshold_ = 0.5f;
+    float conf_threshold_ = 0.15f;
     float nms_threshold_ = 0.45f;
     int input_width_ = 640;
     int input_height_ = 640;

@@ -3,6 +3,7 @@ package com.triage.vision.ui
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.util.Size
@@ -13,14 +14,18 @@ import androidx.activity.viewModels
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
@@ -44,9 +49,13 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
-        private val REQUIRED_PERMISSIONS = arrayOf(
-            Manifest.permission.CAMERA
-        )
+        private val REQUIRED_PERMISSIONS = buildList {
+            add(Manifest.permission.CAMERA)
+            // Android 13+ requires POST_NOTIFICATIONS
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }.toTypedArray()
     }
 
     private val viewModel: MonitoringViewModel by viewModels()
@@ -59,7 +68,7 @@ class MainActivity : ComponentActivity() {
         if (allGranted) {
             Log.i(TAG, "All permissions granted")
         } else {
-            Log.w(TAG, "Some permissions denied")
+            Log.w(TAG, "Some permissions denied: ${permissions.filter { !it.value }.keys}")
         }
     }
 
@@ -87,6 +96,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Bind to service if it's running
+        viewModel.bindToService(this)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Unbind from service (but don't stop it)
+        viewModel.unbindFromService(this)
+    }
+
     private fun hasPermissions(): Boolean {
         return REQUIRED_PERMISSIONS.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
@@ -107,6 +128,7 @@ fun MainScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val observations by viewModel.recentObservations.collectAsStateWithLifecycle(initialValue = emptyList())
+    val context = LocalContext.current
 
     var selectedTab by remember { mutableIntStateOf(0) }
 
@@ -121,7 +143,8 @@ fun MainScreen(
                 actions = {
                     StatusIndicator(
                         isMonitoring = uiState.isMonitoring,
-                        isAnalyzing = uiState.isAnalyzing
+                        isAnalyzing = uiState.isAnalyzing,
+                        isServiceBound = uiState.isServiceBound
                     )
                 }
             )
@@ -154,10 +177,15 @@ fun MainScreen(
                 0 -> MonitoringScreen(
                     uiState = uiState,
                     viewModel = viewModel,
-                    cameraExecutor = cameraExecutor
+                    cameraExecutor = cameraExecutor,
+                    onStartMonitoring = { viewModel.startMonitoring(context) },
+                    onStopMonitoring = { viewModel.stopMonitoring(context) }
                 )
                 1 -> ChartHistoryScreen(observations = observations)
-                2 -> SettingsScreen()
+                2 -> SettingsScreen(
+                    useBackgroundService = uiState.useBackgroundService,
+                    onBackgroundServiceToggle = { viewModel.setBackgroundServiceEnabled(it) }
+                )
             }
         }
 
@@ -209,7 +237,11 @@ fun MainScreen(
 }
 
 @Composable
-fun StatusIndicator(isMonitoring: Boolean, isAnalyzing: Boolean) {
+fun StatusIndicator(
+    isMonitoring: Boolean,
+    isAnalyzing: Boolean,
+    isServiceBound: Boolean = false
+) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -222,6 +254,16 @@ fun StatusIndicator(isMonitoring: Boolean, isAnalyzing: Boolean) {
                 strokeWidth = 2.dp
             )
         }
+
+        // Service indicator
+        if (isServiceBound) {
+            Text(
+                text = "SVC",
+                color = Color.Cyan,
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+
         Text(
             text = if (isMonitoring) "● LIVE" else "○ OFF",
             color = if (isMonitoring)
@@ -236,7 +278,9 @@ fun StatusIndicator(isMonitoring: Boolean, isAnalyzing: Boolean) {
 fun MonitoringScreen(
     uiState: MonitoringViewModel.UiState,
     viewModel: MonitoringViewModel,
-    cameraExecutor: ExecutorService
+    cameraExecutor: ExecutorService,
+    onStartMonitoring: () -> Unit,
+    onStopMonitoring: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -268,7 +312,7 @@ fun MonitoringScreen(
             // Collect synchronized frames
             scope.launch {
                 frameSynchronizer.syncedFrames.collect { syncedFrame ->
-                    if (uiState.isMonitoring) {
+                    if (uiState.isMonitoring && !uiState.useBackgroundService) {
                         viewModel.processFrameWithDepth(syncedFrame.rgb, syncedFrame.depth)
                     }
                 }
@@ -292,28 +336,43 @@ fun MonitoringScreen(
                 .weight(1f)
                 .fillMaxWidth()
         ) {
+            // Always show camera preview when monitoring (even with background service)
             CameraPreview(
                 modifier = Modifier.fillMaxSize(),
                 cameraExecutor = cameraExecutor,
                 onFrameAnalyzed = { bitmap, timestamp ->
-                    if (depthAvailable) {
-                        // Feed RGB frame to synchronizer
+                    // Always send frames to ViewModel - it will decide whether to process
+                    // This handles the case where isMonitoring state hasn't propagated yet
+                    if (depthAvailable && !uiState.useBackgroundService && uiState.isMonitoring) {
+                        // Feed RGB frame to synchronizer (foreground only mode with depth)
                         frameSynchronizer.onRgbFrame(bitmap, timestamp)
-                    } else if (uiState.isMonitoring) {
-                        // Fallback: RGB-only processing
+                    } else {
+                        // Send to ViewModel - it routes to service or processes locally
                         viewModel.processFrame(bitmap)
                     }
                 }
             )
 
+            // Skeleton overlay
+            if (uiState.landmarks.isNotEmpty()) {
+                SkeletonOverlay(
+                    landmarks = uiState.landmarks,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
             DetectionOverlay(
                 personDetected = uiState.personDetected,
                 pose = uiState.currentPose,
+                poseConfidence = uiState.poseConfidence,
                 motionLevel = uiState.motionLevel,
                 fps = uiState.fps,
                 depthEnabled = uiState.depthEnabled,
                 distanceMeters = uiState.distanceMeters,
-                inBedZone = uiState.inBedZone
+                inBedZone = uiState.inBedZone,
+                isBackgroundMode = uiState.useBackgroundService && uiState.isMonitoring,
+                lastObservation = uiState.lastObservation,
+                isAnalyzing = uiState.isAnalyzing
             )
         }
 
@@ -322,8 +381,10 @@ fun MonitoringScreen(
             isAnalyzing = uiState.isAnalyzing,
             secondsSinceMotion = uiState.secondsSinceMotion,
             lastObservation = uiState.lastObservation,
-            onStartMonitoring = { viewModel.startMonitoring() },
-            onStopMonitoring = { viewModel.stopMonitoring() },
+            useBackgroundService = uiState.useBackgroundService,
+            isServiceBound = uiState.isServiceBound,
+            onStartMonitoring = onStartMonitoring,
+            onStopMonitoring = onStopMonitoring,
             onAnalyzeNow = { viewModel.triggerVlmAnalysis() }
         )
     }
@@ -365,7 +426,7 @@ fun CameraPreview(
                     }
                 }
 
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+            val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
 
             try {
                 cameraProvider.unbindAll()
@@ -388,21 +449,97 @@ fun CameraPreview(
     )
 }
 
+/**
+ * Skeleton overlay - draws stick figure on pose landmarks
+ */
+@Composable
+fun SkeletonOverlay(
+    landmarks: List<FastPipeline.PoseLandmark>,
+    modifier: Modifier = Modifier
+) {
+    // MediaPipe pose connections (pairs of landmark indices)
+    val connections = listOf(
+        // Torso
+        11 to 12, 11 to 23, 12 to 24, 23 to 24,
+        // Left arm
+        11 to 13, 13 to 15,
+        // Right arm
+        12 to 14, 14 to 16,
+        // Left leg
+        23 to 25, 25 to 27,
+        // Right leg
+        24 to 26, 26 to 28,
+        // Face
+        0 to 1, 1 to 2, 2 to 3, 3 to 7,
+        0 to 4, 4 to 5, 5 to 6, 6 to 8
+    )
+
+    Canvas(modifier = modifier) {
+        val width = size.width
+        val height = size.height
+
+        // Draw connections (skeleton lines)
+        connections.forEach { (startIdx, endIdx) ->
+            if (startIdx < landmarks.size && endIdx < landmarks.size) {
+                val start = landmarks[startIdx]
+                val end = landmarks[endIdx]
+
+                // Only draw if both landmarks are visible
+                if (start.visibility > 0.5f && end.visibility > 0.5f) {
+                    drawLine(
+                        color = Color.Green,
+                        start = Offset(start.x * width, start.y * height),
+                        end = Offset(end.x * width, end.y * height),
+                        strokeWidth = 4f,
+                        cap = StrokeCap.Round
+                    )
+                }
+            }
+        }
+
+        // Draw landmark points
+        landmarks.forEachIndexed { index, landmark ->
+            if (landmark.visibility > 0.5f) {
+                val x = landmark.x * width
+                val y = landmark.y * height
+
+                // Different colors for different body parts
+                val color = when {
+                    index in 0..10 -> Color.Yellow  // Face
+                    index in 11..22 -> Color.Cyan   // Arms
+                    else -> Color.Magenta           // Legs
+                }
+
+                drawCircle(
+                    color = color,
+                    radius = 6f,
+                    center = Offset(x, y)
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun DetectionOverlay(
     personDetected: Boolean,
     pose: FastPipeline.Pose,
+    poseConfidence: Float = 0f,
     motionLevel: Float,
     fps: Float,
     depthEnabled: Boolean = false,
     distanceMeters: Float = 0f,
-    inBedZone: Boolean = false
+    inBedZone: Boolean = false,
+    isBackgroundMode: Boolean = false,
+    lastObservation: SlowPipeline.Observation? = null,
+    isAnalyzing: Boolean = false
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp)
     ) {
+        // Top status bar
         Row(
             horizontalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier.fillMaxWidth()
@@ -412,17 +549,34 @@ fun DetectionOverlay(
                 color = Color.White,
                 style = MaterialTheme.typography.labelSmall
             )
-            if (depthEnabled) {
-                Text(
-                    text = "DEPTH",
-                    color = Color.Cyan,
-                    style = MaterialTheme.typography.labelSmall
-                )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (isAnalyzing) {
+                    Text(
+                        text = "VLM...",
+                        color = Color.Magenta,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+                if (isBackgroundMode) {
+                    Text(
+                        text = "BG",
+                        color = Color.Green,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+                if (depthEnabled) {
+                    Text(
+                        text = "DEPTH",
+                        color = Color.Cyan,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
             }
         }
 
         Spacer(modifier = Modifier.weight(1f))
 
+        // Detection metrics
         Surface(
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
             shape = MaterialTheme.shapes.medium
@@ -437,12 +591,22 @@ fun DetectionOverlay(
                         MaterialTheme.colorScheme.outline
                 )
                 Text(
-                    text = "Pose: ${pose.name}",
-                    style = MaterialTheme.typography.bodySmall
+                    text = if (poseConfidence > 0)
+                        "Pose: ${pose.name} (${(poseConfidence * 100).toInt()}%)"
+                    else
+                        "Pose: ${pose.name}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (pose != FastPipeline.Pose.UNKNOWN) Color.Green else Color.Gray
                 )
                 Text(
                     text = "Motion: %.0f%%".format(motionLevel * 100),
                     style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    text = if (motionLevel < 0.1f) "STILL" else "MOVING",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (motionLevel < 0.1f) Color.Yellow else Color.Green
                 )
 
                 // Depth metrics
@@ -467,6 +631,46 @@ fun DetectionOverlay(
                 }
             }
         }
+
+        // VLM Scene Analysis - at bottom for visibility
+        lastObservation?.let { obs ->
+            if (obs.chartNote.isNotBlank() && obs.chartNote != "VLM output could not be parsed") {
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    color = Color.Black.copy(alpha = 0.85f),
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "VLM Scene Analysis",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color.Magenta,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (obs.position != "unknown") {
+                                Text(
+                                    text = "${obs.position} • ${obs.alertness}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.Cyan
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = obs.chartNote,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White,
+                            maxLines = 4
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -476,6 +680,8 @@ fun ControlPanel(
     isAnalyzing: Boolean,
     secondsSinceMotion: Long,
     lastObservation: SlowPipeline.Observation?,
+    useBackgroundService: Boolean = true,
+    isServiceBound: Boolean = false,
     onStartMonitoring: () -> Unit,
     onStopMonitoring: () -> Unit,
     onAnalyzeNow: () -> Unit
@@ -493,13 +699,22 @@ fun ControlPanel(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = if (secondsSinceMotion > 60)
-                        "Still for ${secondsSinceMotion / 60}m"
-                    else
-                        "Active",
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Column {
+                    Text(
+                        text = if (secondsSinceMotion > 60)
+                            "Still for ${secondsSinceMotion / 60}m"
+                        else
+                            "Active",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    if (useBackgroundService && isMonitoring) {
+                        Text(
+                            text = "Background service active",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
 
                 lastObservation?.let {
                     Text(
@@ -621,7 +836,10 @@ fun ObservationCard(observation: ObservationEntity) {
 }
 
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(
+    useBackgroundService: Boolean = true,
+    onBackgroundServiceToggle: (Boolean) -> Unit = {}
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -634,8 +852,31 @@ fun SettingsScreen() {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        SettingsItem(title = "VLM Analysis Interval", value = "15 minutes")
-        SettingsItem(title = "Stillness Alert Threshold", value = "30 minutes")
+        // Background service toggle
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(text = "Background Monitoring")
+                Text(
+                    text = "Continue monitoring when app is in background",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
+            Switch(
+                checked = useBackgroundService,
+                onCheckedChange = onBackgroundServiceToggle
+            )
+        }
+        HorizontalDivider()
+
+        SettingsItem(title = "VLM Analysis Interval", value = "2 seconds")
+        SettingsItem(title = "Stillness Alert Threshold", value = "30 seconds")
         SettingsItem(title = "Fall Detection", value = "Enabled")
         SettingsItem(title = "Data Retention", value = "24 hours")
     }
