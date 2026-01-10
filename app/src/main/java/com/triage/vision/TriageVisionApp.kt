@@ -47,9 +47,47 @@ class TriageVisionApp : Application() {
 
     // Core components (lazy initialized)
     val nativeBridge: NativeBridge by lazy { NativeBridge() }
-    // MediaPipe pose detector - uses CPU delegate for Pixel 2 compatibility
-    val poseDetector: MediaPipePoseDetector by lazy { MediaPipePoseDetector(this) }
+    // MediaPipe pose detector - disabled on Pixel 2 due to native crashes
+    // Enable only on devices with known MediaPipe compatibility (Mason Scan 600, Pixel 4+, etc.)
+    val poseDetector: MediaPipePoseDetector? by lazy {
+        if (isMediaPipeCompatible()) {
+            try {
+                MediaPipePoseDetector(this)
+            } catch (e: Exception) {
+                Log.w(TAG, "MediaPipe initialization failed: ${e.message}")
+                null
+            }
+        } else {
+            Log.i(TAG, "MediaPipe disabled on ${android.os.Build.MODEL} (known incompatible)")
+            null
+        }
+    }
     val fastPipeline: FastPipeline by lazy { FastPipeline(nativeBridge, poseDetector) }
+
+    /**
+     * Check if MediaPipe is compatible with this device
+     * MediaPipe crashes on Pixel 2 and some older devices
+     */
+    private fun isMediaPipeCompatible(): Boolean {
+        val model = android.os.Build.MODEL.lowercase()
+        val sdk = android.os.Build.VERSION.SDK_INT
+
+        // Known incompatible devices
+        val incompatible = listOf(
+            "pixel 2",      // Crashes in native code
+            "pixel 2 xl",   // Same issue
+            "pixel",        // Original Pixel may have issues
+            "pixel xl"      // Original Pixel XL
+        )
+
+        if (incompatible.any { model.contains(it) }) {
+            return false
+        }
+
+        // Require API 29+ for stable MediaPipe (Android 10+)
+        // But for testing on older devices, we allow it if not in blocklist
+        return sdk >= 29 || BackendRegistry.isMasonScan600()
+    }
     val slowPipeline: SlowPipeline by lazy { SlowPipeline(nativeBridge) }
     val chartEngine: AutoChartEngine by lazy { AutoChartEngine() }
 
@@ -260,7 +298,7 @@ class TriageVisionApp : Application() {
 
     override fun onTerminate() {
         super.onTerminate()
-        poseDetector.close()
+        poseDetector?.close()
         nativeBridge.cleanup()
     }
 }
