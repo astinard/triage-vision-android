@@ -32,6 +32,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Foreground service for continuous patient monitoring.
@@ -404,8 +405,10 @@ class MonitoringService : Service(), LifecycleOwner {
      * Internal frame processing - shared by processFrame and processExternalFrame
      */
     // CLIP classification runs every N frames to save CPU
+    // Prevent overlapping classifications (each takes 7-15s on Pixel 2)
     private var clipFrameCounter = 0
     private val CLIP_FRAME_INTERVAL = 5  // Run CLIP every 5 frames
+    private val isClipRunning = AtomicBoolean(false)
 
     private fun processFrameInternal(bitmap: Bitmap) {
         try {
@@ -436,11 +439,19 @@ class MonitoringService : Service(), LifecycleOwner {
             }
 
             // Run CLIP classification every N frames (when person detected)
+            // Skip if a classification is already in progress (prevents memory buildup)
             clipFrameCounter++
-            if (clipFrameCounter >= CLIP_FRAME_INTERVAL && result.personDetected && fastClassifier.isReady()) {
+            if (clipFrameCounter >= CLIP_FRAME_INTERVAL && result.personDetected &&
+                fastClassifier.isReady() && !isClipRunning.get()) {
                 clipFrameCounter = 0
-                serviceScope.launch {
-                    runClipClassification(bitmap)
+                if (isClipRunning.compareAndSet(false, true)) {
+                    serviceScope.launch {
+                        try {
+                            runClipClassification(bitmap)
+                        } finally {
+                            isClipRunning.set(false)
+                        }
+                    }
                 }
             }
 
