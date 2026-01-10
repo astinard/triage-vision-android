@@ -25,8 +25,9 @@ class VlmEventScheduler(
     companion object {
         private const val TAG = "VlmEventScheduler"
 
-        // Minimum time between VLM runs (prevent spam)
-        private const val MIN_VLM_INTERVAL_MS = 10_000L  // 10 seconds
+        // Minimum time between VLM runs (prevent spam and memory pressure)
+        // Increased to 60s for stability on low-memory devices like Pixel 2
+        private const val MIN_VLM_INTERVAL_MS = 60_000L  // 60 seconds
 
         // Maximum time without VLM (fallback periodic check)
         private const val MAX_VLM_INTERVAL_MS = 5 * 60 * 1000L  // 5 minutes
